@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#8f1d1d" />
+  <title>Kenya Presidential Opinion Polls Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root { --burgundy:#8f1d1d; --deep:#111827; --cream:#fff7f4; }
+    html { scroll-behavior:smooth; }
+    body { background: linear-gradient(180deg,#fff 0%,#f8fafc 55%,#fff7f4 100%); }
+    .glass { background: rgba(255,255,255,.12); backdrop-filter: blur(10px); }
+    .safe-bottom { padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); }
+    .chart-wrap { position: relative; height: 360px; }
+    @media (max-width: 640px) { .chart-wrap { height: 300px; } }
+  </style>
+</head>
+<body class="min-h-screen text-slate-900 antialiased">
+  <main class="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 safe-bottom">
+    <section class="overflow-hidden rounded-[2rem] bg-gradient-to-br from-[#9b1c1f] via-[#811b23] to-[#090919] p-6 text-white shadow-2xl sm:p-10">
+      <div class="max-w-4xl">
+        <p class="mb-4 text-xs font-black uppercase tracking-[0.35em] text-rose-100 sm:text-sm">Primary-source tracker</p>
+        <h1 class="text-4xl font-black leading-tight tracking-tight sm:text-6xl">Kenya Presidential Opinion Polls Tracker</h1>
+        <p class="mt-6 max-w-3xl text-lg leading-8 text-rose-50 sm:text-2xl">
+          Automated dashboard for official polling releases from Kenyan pollsters. Ambiguous extractions are held for review before publication.
+        </p>
+      </div>
+      <div class="mt-8 grid grid-cols-2 gap-4 sm:max-w-2xl">
+        <div class="glass rounded-3xl p-5">
+          <p class="text-sm text-rose-100 sm:text-base">Last poll date</p>
+          <p id="lastPollDate" class="mt-2 text-2xl font-black">—</p>
+        </div>
+        <div class="glass rounded-3xl p-5">
+          <p class="text-sm text-rose-100 sm:text-base">Polls loaded</p>
+          <p id="pollsLoaded" class="mt-2 text-2xl font-black">—</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="mt-6 rounded-[2rem] border border-rose-100 bg-white p-5 shadow-sm sm:p-6">
+      <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <h2 class="text-xl font-black text-slate-900">Data source</h2>
+          <p id="dataStatus" class="mt-1 text-sm leading-6 text-slate-600">
+            This standalone file works even when opened from Downloads. It starts with no mock data and can import a real <code class="rounded bg-slate-100 px-1">polls_data.json</code> file.
+          </p>
+        </div>
+        <div class="flex flex-col gap-3 sm:flex-row">
+          <label class="inline-flex cursor-pointer items-center justify-center rounded-2xl bg-[#8f1d1d] px-5 py-3 text-sm font-bold text-white shadow hover:bg-[#7b1818]">
+            Load polls_data.json
+            <input id="fileInput" type="file" accept="application/json,.json" class="hidden" />
+          </label>
+          <button id="tryFetchBtn" class="rounded-2xl border border-rose-200 bg-white px-5 py-3 text-sm font-bold text-[#8f1d1d] hover:bg-rose-50">
+            Try hosted fetch
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section id="loadingState" class="mt-6 hidden rounded-[2rem] border border-rose-100 bg-white p-8 text-center shadow-sm">
+      <div class="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-rose-100 border-t-[#8f1d1d]"></div>
+      <p class="mt-4 font-bold text-slate-700">Loading poll data…</p>
+    </section>
+
+    <section id="errorState" class="mt-6 hidden rounded-[2rem] border border-red-200 bg-red-50 p-6 text-red-900 shadow-sm">
+      <h2 class="text-2xl font-black">Could not load poll data</h2>
+      <p id="errorMessage" class="mt-3 leading-7"></p>
+    </section>
+
+    <section id="emptyState" class="mt-6 hidden rounded-[2rem] border border-amber-200 bg-amber-50 p-6 text-amber-950 shadow-sm">
+      <h2 class="text-2xl font-black">No approved poll records yet</h2>
+      <p class="mt-3 leading-7">
+        This is expected before the backend discovers real official records and writes them to <code class="rounded bg-amber-100 px-1">polls_data.json</code>. No mock numbers are embedded in this standalone file.
+      </p>
+    </section>
+
+    <section id="dashboard" class="mt-6 hidden space-y-6">
+      <div class="rounded-[2rem] border border-rose-100 bg-white p-5 shadow-sm sm:p-6">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 class="text-2xl font-black">Latest metrics</h2>
+            <p class="mt-1 text-sm text-slate-600">Latest compatible poll for each tracked figure.</p>
+          </div>
+          <label class="block">
+            <span class="mb-1 block text-sm font-bold text-slate-700">Poll type</span>
+            <select id="pollTypeFilter" class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:border-[#8f1d1d] sm:w-80"></select>
+          </label>
+        </div>
+        <div id="metricsGrid" class="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-5"></div>
+      </div>
+
+      <div class="rounded-[2rem] border border-rose-100 bg-white p-5 shadow-sm sm:p-6">
+        <div class="mb-4">
+          <h2 class="text-2xl font-black">Historical trend</h2>
+          <p class="mt-1 text-sm text-slate-600">Line chart uses only the selected compatible poll type.</p>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="trendChart"></canvas>
+        </div>
+      </div>
+
+      <div class="rounded-[2rem] border border-rose-100 bg-white p-5 shadow-sm sm:p-6">
+        <h2 class="text-2xl font-black">Source records</h2>
+        <div id="sourceList" class="mt-4 space-y-3"></div>
+      </div>
+    </section>
+
+    <footer class="mt-12 text-center text-sm leading-7 text-slate-500">
+      Built for primary-source polling records. Review ambiguous extractions before publication.
+    </footer>
+  </main>
+
+  <script>
+    // Standalone mode: no fake/sample data is embedded. Load a real JSON file with the button,
+    // or host this HTML next to /data/polls_data.json and use "Try hosted fetch".
+    const EMBEDDED_POLLS_DATA = [];
+
+    const CANDIDATES = [
+      "William Ruto",
+      "Kalonzo Musyoka",
+      "Fred Matiang'i",
+      "Rigathi Gachagua",
+      "Edwin Sifuna"
+    ];
+
+    const JSON_PATHS = [
+      "data/polls_data.json",
+      "./data/polls_data.json",
+      "../data/polls_data.json",
+      "/data/polls_data.json",
+      "polls_data.json",
+      "./polls_data.json"
+    ];
+
+    let allRecords = [];
+    let chart;
+
+    const els = {
+      lastPollDate: document.getElementById("lastPollDate"),
+      pollsLoaded: document.getElementById("pollsLoaded"),
+      dataStatus: document.getElementById("dataStatus"),
+      loadingState: document.getElementById("loadingState"),
+      errorState: document.getElementById("errorState"),
+      errorMessage: document.getElementById("errorMessage"),
+      emptyState: document.getElementById("emptyState"),
+      dashboard: document.getElementById("dashboard"),
+      pollTypeFilter: document.getElementById("pollTypeFilter"),
+      metricsGrid: document.getElementById("metricsGrid"),
+      sourceList: document.getElementById("sourceList"),
+      fileInput: document.getElementById("fileInput"),
+      tryFetchBtn: document.getElementById("tryFetchBtn")
+    };
+
+    function showOnly(state) {
+      els.loadingState.classList.toggle("hidden", state !== "loading");
+      els.errorState.classList.toggle("hidden", state !== "error");
+      els.emptyState.classList.toggle("hidden", state !== "empty");
+      els.dashboard.classList.toggle("hidden", state !== "dashboard");
+    }
+
+    function normalizeRecords(data) {
+      if (!Array.isArray(data)) throw new Error("polls_data.json must contain a JSON array.");
+      return data
+        .filter(Boolean)
+        .filter(r => r.date && r.figures && typeof r.figures === "object")
+        .map(r => ({
+          ...r,
+          poll_type: r.poll_type || "unknown",
+          extraction_confidence: Number.isFinite(Number(r.extraction_confidence)) ? Number(r.extraction_confidence) : null,
+          figures: Object.fromEntries(CANDIDATES.map(c => {
+            const v = r.figures?.[c];
+            const n = v === null || v === undefined || v === "" ? null : Number(v);
+            return [c, Number.isFinite(n) && n >= 0 && n <= 100 ? n : null];
+          }))
+        }))
+        .sort((a,b) => new Date(a.date) - new Date(b.date));
+    }
+
+    function formatDate(value) {
+      if (!value) return "—";
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return value;
+      return d.toLocaleDateString(undefined, { year:"numeric", month:"short", day:"numeric" });
+    }
+
+    function humanPollType(type) {
+      return String(type || "unknown").replaceAll("_", " ").replace(/\b\w/g, m => m.toUpperCase());
+    }
+
+    function updateHeader(records) {
+      els.pollsLoaded.textContent = String(records.length);
+      const latest = records.at(-1);
+      els.lastPollDate.textContent = latest ? formatDate(latest.date) : "—";
+    }
+
+    function buildFilter(records) {
+      const types = [...new Set(records.map(r => r.poll_type).filter(Boolean))].sort();
+      els.pollTypeFilter.innerHTML = "";
+      for (const type of types) {
+        const opt = document.createElement("option");
+        opt.value = type;
+        opt.textContent = humanPollType(type);
+        els.pollTypeFilter.appendChild(opt);
+      }
+    }
+
+    function recordsForSelectedType() {
+      const type = els.pollTypeFilter.value;
+      return allRecords.filter(r => r.poll_type === type);
+    }
+
+    function renderMetrics(records) {
+      els.metricsGrid.innerHTML = "";
+      for (const candidate of CANDIDATES) {
+        const withValue = records.filter(r => r.figures?.[candidate] !== null && r.figures?.[candidate] !== undefined);
+        const latest = withValue.at(-1);
+        const previous = withValue.at(-2);
+        const latestValue = latest ? latest.figures[candidate] : null;
+        const prevValue = previous ? previous.figures[candidate] : null;
+        const change = latestValue !== null && prevValue !== null ? latestValue - prevValue : null;
+        const changeText = change === null ? "No prior" : `${change >= 0 ? "+" : ""}${change.toFixed(1)} pts`;
+        const card = document.createElement("article");
+        card.className = "rounded-3xl border border-slate-100 bg-slate-50 p-4";
+        card.innerHTML = `
+          <p class="text-sm font-black text-slate-800">${candidate}</p>
+          <p class="mt-3 text-3xl font-black text-[#8f1d1d]">${latestValue === null ? "—" : latestValue.toFixed(1) + "%"}</p>
+          <p class="mt-2 text-xs font-bold ${change !== null && change >= 0 ? "text-emerald-700" : "text-slate-500"}">${changeText}</p>
+          <p class="mt-3 text-xs leading-5 text-slate-500">${latest ? `${latest.pollster || "Unknown pollster"}<br>${formatDate(latest.date)}` : "No record yet"}</p>
+        `;
+        els.metricsGrid.appendChild(card);
+      }
+    }
+
+    function renderChart(records) {
+      const ctx = document.getElementById("trendChart");
+      const labels = records.map(r => formatDate(r.date));
+      const datasets = CANDIDATES.map(candidate => ({
+        label: candidate,
+        data: records.map(r => r.figures?.[candidate] ?? null),
+        tension: 0.35,
+        borderWidth: 2,
+        pointRadius: 3,
+        spanGaps: true
+      }));
+      if (chart) chart.destroy();
+      chart = new Chart(ctx, {
+        type: "line",
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { position: "bottom", labels: { boxWidth: 12, usePointStyle: true } },
+            tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y ?? "—"}%` } }
+          },
+          scales: {
+            y: { beginAtZero: true, suggestedMax: 100, ticks: { callback: v => v + "%" } },
+            x: { ticks: { maxRotation: 0, autoSkip: true } }
+          }
+        }
+      });
+    }
+
+    function renderSources(records) {
+      els.sourceList.innerHTML = "";
+      const recent = [...records].reverse().slice(0, 12);
+      if (!recent.length) {
+        els.sourceList.innerHTML = `<p class="rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">No source records for this filter.</p>`;
+        return;
+      }
+      for (const r of recent) {
+        const confidence = r.extraction_confidence === null ? "—" : `${Math.round(r.extraction_confidence * 100)}%`;
+        const url = r.source_url || "#";
+        const item = document.createElement("article");
+        item.className = "rounded-3xl border border-slate-100 bg-white p-4 shadow-sm";
+        item.innerHTML = `
+          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p class="text-sm font-black text-slate-900">${r.source_title || "Untitled source"}</p>
+              <p class="mt-1 text-xs leading-5 text-slate-500">${r.pollster || "Unknown pollster"} · ${formatDate(r.date)} · ${humanPollType(r.poll_type)}</p>
+            </div>
+            <span class="w-fit rounded-full bg-rose-50 px-3 py-1 text-xs font-black text-[#8f1d1d]">Confidence ${confidence}</span>
+          </div>
+          <a class="mt-3 inline-flex text-sm font-bold text-[#8f1d1d] underline decoration-rose-200 underline-offset-4" href="${url}" target="_blank" rel="noopener">Open source</a>
+        `;
+        els.sourceList.appendChild(item);
+      }
+    }
+
+    function render(records, sourceLabel) {
+      allRecords = normalizeRecords(records);
+      updateHeader(allRecords);
+      els.errorState.classList.add("hidden");
+      els.dataStatus.innerHTML = sourceLabel || `Loaded ${allRecords.length} approved records.`;
+      if (!allRecords.length) {
+        showOnly("empty");
+        return;
+      }
+      buildFilter(allRecords);
+      renderSelected();
+      showOnly("dashboard");
+    }
+
+    function renderSelected() {
+      const records = recordsForSelectedType();
+      renderMetrics(records);
+      renderChart(records);
+      renderSources(records);
+    }
+
+    async function tryHostedFetch() {
+      showOnly("loading");
+      let lastError = null;
+      for (const path of JSON_PATHS) {
+        try {
+          const res = await fetch(path, { cache: "no-store" });
+          if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+          const json = await res.json();
+          render(json, `Loaded from <code class="rounded bg-slate-100 px-1">${path}</code>.`);
+          return;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      els.errorMessage.textContent = `Hosted fetch failed. This is normal when opening from Downloads/content:// because browsers block local fetch. Use the Load polls_data.json button, or host this file with the data folder. Last error: ${lastError?.message || "Unknown error"}`;
+      showOnly("error");
+    }
+
+    els.fileInput.addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      showOnly("loading");
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        render(json, `Loaded from selected file: <code class="rounded bg-slate-100 px-1">${file.name}</code>.`);
+      } catch (err) {
+        els.errorMessage.textContent = `The selected file could not be parsed as valid polls_data.json. ${err.message}`;
+        showOnly("error");
+      }
+    });
+
+    els.tryFetchBtn.addEventListener("click", tryHostedFetch);
+    els.pollTypeFilter.addEventListener("change", renderSelected);
+
+    // Initial render uses embedded real data array. It is empty by design, not a mock dataset.
+    render(EMBEDDED_POLLS_DATA, "Standalone mode loaded. Use the button to import a real polls_data.json file, or host this HTML with the data folder and click Try hosted fetch.");
+  </script>
+</body>
+</html>
