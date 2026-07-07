@@ -12,7 +12,7 @@ import io
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pdfplumber
 from dateparser.search import search_dates
@@ -41,19 +41,44 @@ CANDIDATE_ALIASES: Dict[str, List[str]] = {
 }
 
 POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
-    ("preferred_presidential_candidate", ["preferred presidential candidate", "presidential candidate preference"]),
-    ("preferred_presidential_aspirant", ["preferred presidential aspirant", "presidential aspirant", "presidential hopeful"]),
-    ("approval_rating", ["approval rating", "approve", "disapprove", "performance rating"]),
-    ("popularity_rating", ["popularity", "popular", "most popular"]),
-    ("party_support", ["party support", "political party", "party popularity"]),
+    (
+        "preferred_presidential_candidate",
+        ["preferred presidential candidate", "presidential candidate preference"],
+    ),
+    (
+        "preferred_presidential_aspirant",
+        ["preferred presidential aspirant", "presidential aspirant", "presidential hopeful"],
+    ),
+    (
+        "approval_rating",
+        ["approval rating", "approve", "disapprove", "performance rating"],
+    ),
+    (
+        "popularity_rating",
+        ["popularity", "popular", "most popular"],
+    ),
+    (
+        "party_support",
+        ["party support", "political party", "party popularity"],
+    ),
 ]
 
-PERCENT_RE = re.compile(r"(?P<value>\d{1,2}(?:\.\d+)?|100(?:\.0+)?)\s*(?:%|percent|per\s*cent)\b", re.IGNORECASE)
-SAMPLE_SIZE_RE = re.compile(r"(?:sample size|sample|n)\s*[:=]?\s*(?:of\s*)?(?P<n>\d{3,6})", re.IGNORECASE)
-FIELDWORK_RE = re.compile(
-    r"(?:fieldwork|data collection|interviews conducted|conducted)\s*(?:was\s*)?(?:between|from)?\s*(?P<dates>.{0,100})",
+PERCENT_RE = re.compile(
+    r"(?P<value>\d{1,2}(?:\.\d+)?|100(?:\.0+)?)\s*(?:%|percent|per\s*cent)\b",
     re.IGNORECASE,
 )
+
+SAMPLE_SIZE_RE = re.compile(
+    r"(?:sample size|sample|n)\s*[:=]?\s*(?:of\s*)?(?P<n>\d{3,6})",
+    re.IGNORECASE,
+)
+
+FIELDWORK_RE = re.compile(
+    r"(?:fieldwork|data collection|interviews conducted|conducted)\s*"
+    r"(?:was\s*)?(?:between|from)?\s*(?P<dates>.{0,100})",
+    re.IGNORECASE,
+)
+
 QUESTION_RE = re.compile(
     r"(?:question|asked)\s*[:\-]\s*(?P<question>.{20,250}?)(?:\n|$)",
     re.IGNORECASE | re.DOTALL,
@@ -77,11 +102,13 @@ class ParseResult:
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     """Extract plain text from PDF bytes using pdfplumber."""
     text_parts: List[str] = []
+
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             page_text = page.extract_text() or ""
             if page_text.strip():
                 text_parts.append(page_text)
+
     return "\n".join(text_parts)
 
 
@@ -99,6 +126,7 @@ def classify_poll_type(text: str) -> Tuple[str, float]:
     lower = text.lower()
     best_type = "unknown"
     best_score = 0.0
+
     for poll_type, keywords in POLL_TYPE_KEYWORDS:
         matches = sum(1 for kw in keywords if kw in lower)
         if matches:
@@ -106,10 +134,14 @@ def classify_poll_type(text: str) -> Tuple[str, float]:
             if score > best_score:
                 best_type = poll_type
                 best_score = score
+
     return best_type, best_score
 
 
-def find_candidate_percentages(text: str, window_chars: int = 170) -> Tuple[Dict[str, Optional[float]], str, float]:
+def find_candidate_percentages(
+    text: str,
+    window_chars: int = 170,
+) -> Tuple[Dict[str, Optional[float]], str, float]:
     """
     Locate candidate aliases and nearby percentage values.
 
@@ -118,7 +150,9 @@ def find_candidate_percentages(text: str, window_chars: int = 170) -> Tuple[Dict
     intentionally conservative.
     """
     normalized = normalize_text(text)
-    figures: Dict[str, Optional[float]] = {candidate: None for candidate in TRACKED_CANDIDATES}
+    figures: Dict[str, Optional[float]] = {
+        candidate: None for candidate in TRACKED_CANDIDATES
+    }
     snippets: List[str] = []
     evidence_count = 0
 
@@ -129,17 +163,22 @@ def find_candidate_percentages(text: str, window_chars: int = 170) -> Tuple[Dict
 
         for alias in aliases:
             pattern = re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)
+
             for match in pattern.finditer(normalized):
                 start = max(0, match.start() - window_chars)
                 end = min(len(normalized), match.end() + window_chars)
                 window = normalized[start:end]
+
                 for pct in PERCENT_RE.finditer(window):
                     value = float(pct.group("value"))
+
                     if not 0 <= value <= 100:
                         continue
+
                     alias_mid = match.start() - start + len(alias) // 2
                     pct_mid = pct.start() + len(pct.group(0)) // 2
                     distance = abs(alias_mid - pct_mid)
+
                     if best_distance is None or distance < best_distance:
                         best_value = value
                         best_distance = distance
@@ -154,9 +193,36 @@ def find_candidate_percentages(text: str, window_chars: int = 170) -> Tuple[Dict
     return figures, "\n---\n".join(snippets[:5]), confidence
 
 
+def count_positive_candidate_values(figures: Dict[str, Optional[float]]) -> int:
+    """
+    Count extracted candidate values that are real positive percentages.
+
+    This prevents bad records like all candidates = 0.0% from being
+    automatically published to polls_data.json.
+    """
+    return sum(
+        1
+        for value in figures.values()
+        if isinstance(value, (int, float)) and value > 0 and value <= 100
+    )
+
+
+def has_all_zero_or_empty_values(figures: Dict[str, Optional[float]]) -> bool:
+    """
+    Return True when no candidate has a positive extracted percentage.
+
+    Examples that should not be auto-published:
+    - all values are None
+    - all values are 0
+    - a mix of None and 0
+    """
+    return count_positive_candidate_values(figures) == 0
+
+
 def extract_dates(text: str) -> Tuple[Optional[str], Optional[str]]:
     """Extract a plausible poll/publication date and fieldwork date phrase."""
     normalized = normalize_text(text)
+
     found = search_dates(
         normalized[:6000],
         settings={
@@ -165,14 +231,21 @@ def extract_dates(text: str) -> Tuple[Optional[str], Optional[str]]:
             "DATE_ORDER": "DMY",
         },
     )
+
     poll_date = None
+
     if found:
-        valid_dates = [dt for _, dt in found if 2000 <= dt.year <= datetime.utcnow().year + 1]
+        valid_dates = [
+            dt
+            for _, dt in found
+            if 2000 <= dt.year <= datetime.utcnow().year + 1
+        ]
         if valid_dates:
             poll_date = valid_dates[0].date().isoformat()
 
     fieldwork_dates = None
     m = FIELDWORK_RE.search(normalized)
+
     if m:
         fieldwork_dates = re.sub(r"\s+", " ", m.group("dates")).strip(" .;:-")[:140]
 
@@ -182,8 +255,10 @@ def extract_dates(text: str) -> Tuple[Optional[str], Optional[str]]:
 def extract_sample_size(text: str) -> Optional[int]:
     """Extract a sample-size value when it appears in common report language."""
     m = SAMPLE_SIZE_RE.search(normalize_text(text))
+
     if not m:
         return None
+
     try:
         n = int(m.group("n"))
         return n if 100 <= n <= 200000 else None
@@ -194,8 +269,10 @@ def extract_sample_size(text: str) -> Optional[int]:
 def extract_question_text(text: str) -> Optional[str]:
     """Extract a likely question phrase if the report labels it explicitly."""
     m = QUESTION_RE.search(normalize_text(text))
+
     if not m:
         return None
+
     question = re.sub(r"\s+", " ", m.group("question")).strip()
     return question[:300]
 
@@ -203,6 +280,7 @@ def extract_question_text(text: str) -> Optional[str]:
 def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResult:
     """Parse normalized poll data from extracted PDF or webpage text."""
     normalized = normalize_text(text)
+
     if not normalized:
         return ParseResult(
             status="REJECTED",
@@ -224,27 +302,51 @@ def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResu
     sample_size = extract_sample_size(normalized)
     question_text = extract_question_text(normalized)
 
-    found_values = {k: v for k, v in figures.items() if isinstance(v, (int, float))}
-    found_count = len(found_values)
+    positive_count = count_positive_candidate_values(figures)
+    has_any_extracted_value = any(
+        isinstance(value, (int, float)) for value in figures.values()
+    )
 
-    confidence = round(min(0.98, figure_confidence + type_confidence * 0.25 + (0.08 if poll_date else 0)), 2)
+    confidence = round(
+        min(
+            0.98,
+            figure_confidence
+            + type_confidence * 0.25
+            + (0.08 if poll_date else 0),
+        ),
+        2,
+    )
 
-    if found_count >= 2 and poll_type != "unknown" and poll_date:
+    if positive_count >= 2 and poll_type != "unknown" and poll_date:
         status = "AUTO_ACCEPTED"
         reason = "Candidate percentages, poll type, and date were identified."
-    elif found_count > 0:
+
+    elif has_all_zero_or_empty_values(figures) and has_any_extracted_value:
+        status = "NEEDS_REVIEW"
+        reason = (
+            "Candidate percentage values were extracted, but all extracted values "
+            "are zero. This is likely a parsing error and must be reviewed before "
+            "publication."
+        )
+
+    elif positive_count > 0:
         status = "NEEDS_REVIEW"
         missing = []
+
         if poll_type == "unknown":
             missing.append("poll type")
+
         if not poll_date:
             missing.append("poll date")
-        if found_count < 2:
-            missing.append("at least two tracked candidate values")
+
+        if positive_count < 2:
+            missing.append("at least two positive tracked candidate values")
+
         reason = "Candidate values found but review is needed for: " + ", ".join(missing)
+
     else:
         status = "REJECTED"
-        reason = "No tracked candidate percentages were found."
+        reason = "No positive tracked candidate percentages were found."
 
     return ParseResult(
         status=status,
@@ -277,4 +379,5 @@ def parse_pdf_bytes(pdf_bytes: bytes, fallback_date: Optional[str] = None) -> Pa
             raw_snippet="",
             reason=f"PDF extraction failed: {exc}",
         )
+
     return parse_poll_text(text, fallback_date=fallback_date)
