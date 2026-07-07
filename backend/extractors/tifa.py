@@ -18,7 +18,6 @@ from bs4 import BeautifulSoup
 
 
 TIFA_POLLS_URL = "https://www.tifaresearch.com/polls/"
-TIFA_DOMAIN = "www.tifaresearch.com"
 
 REQUEST_TIMEOUT = 30
 
@@ -72,6 +71,23 @@ BAD_URL_PATTERNS = [
     "/wp-login",
     "/feed/",
 ]
+
+GENERIC_TITLES = {
+    "",
+    "accept",
+    "facebook",
+    "x",
+    "twitter",
+    "linkedin",
+    "whatsapp",
+    "email",
+    "mastodon",
+    "share",
+    "read more",
+    "learn more",
+    "home",
+    "our services",
+}
 
 
 @dataclass
@@ -190,17 +206,18 @@ def discover_sources() -> List[Dict]:
 
         title = _clean_text(anchor.get_text(" ", strip=True))
 
+        if title.lower() in GENERIC_TITLES:
+            continue
+
         if not title:
             title = "TIFA Research poll release"
 
-        # Ignore generic navigation links that are not PDFs and not relevant.
         if not _is_pdf_url(url) and not _looks_relevant(title, url):
             continue
 
         pdf_url = url if _is_pdf_url(url) else None
         page_url = TIFA_POLLS_URL if pdf_url else url
 
-        # If this is a relevant article page, inspect it for official PDFs.
         pdf_links = [pdf_url] if pdf_url else _extract_pdf_links_from_page(page_url)
 
         if pdf_links:
