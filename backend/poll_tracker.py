@@ -138,21 +138,38 @@ def clean_source(source: Dict[str, Any]) -> Dict[str, Optional[str]]:
 
 
 def dedupe_sources(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate sources using PDF URL or page URL."""
-    seen = set()
-    output: List[Dict[str, Any]] = []
+    """
+    Deduplicate sources using PDF URL or page URL.
+
+    If the same source is discovered twice, merge useful metadata rather than
+    blindly keeping the first copy. This is important because a discovered page
+    may have ``published_date=None`` while the official seed source has a known
+    date that helps the parser auto-approve a valid extraction.
+    """
+    by_key: Dict[str, Dict[str, Any]] = {}
 
     for raw in sources:
         source = clean_source(raw)
         key = source_key(source)
 
-        if not key or key in seen:
+        if not key:
             continue
 
-        seen.add(key)
-        output.append(source)
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = source
+            continue
 
-    return output
+        # Prefer non-empty values from either copy. Keep the more descriptive
+        # title and preserve known published dates from seed sources.
+        for field in ["pollster", "page_url", "pdf_url", "published_date"]:
+            if not existing.get(field) and source.get(field):
+                existing[field] = source.get(field)
+
+        if source.get("title") and (not existing.get("title") or len(source["title"]) > len(existing["title"])):
+            existing["title"] = source["title"]
+
+    return list(by_key.values())
 
 
 def download_url(url: str) -> bytes:
@@ -324,8 +341,10 @@ def dedupe_review_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def discover_all_sources() -> List[Dict[str, Any]]:
-    """Run all configured discovery modules and append seed sources."""
-    sources: List[Dict[str, Any]] = []
+    """Run all configured discovery modules and include official seed sources."""
+    # Put seed sources first so known official metadata is always present. The
+    # deduper will still merge any matching discovered source details.
+    sources: List[Dict[str, Any]] = list(SEED_SOURCES)
 
     try:
         sources.extend(tifa.discover_sources())
@@ -336,8 +355,6 @@ def discover_all_sources() -> List[Dict[str, Any]]:
         sources.extend(infotrak.discover_sources())
     except Exception as exc:  # noqa: BLE001
         print(f"Infotrak discovery failed: {exc}", file=sys.stderr)
-
-    sources.extend(SEED_SOURCES)
 
     return dedupe_sources(sources)
 
