@@ -1,1 +1,23 @@
-[]
+[
+  {
+    "date": "2026-07-01",
+    "fieldwork_dates": "during 2nd-11th May. The results are based on household, face-to-face interviews with 2,013",
+    "pollster": "TIFA Research",
+    "poll_type": "popularity_rating",
+    "question_text": null,
+    "geography": "Kenya",
+    "sample_size": 2027,
+    "figures": {
+      "William Ruto": 0.0,
+      "Kalonzo Musyoka": 0.0,
+      "Fred Matiang'i": 0.0,
+      "Rigathi Gachagua": 0.0,
+      "Edwin Sifuna": 0.0
+    },
+    "source_title": "TIFA Research poll release",
+    "source_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
+    "extraction_status": "AUTO_ACCEPTED",
+    "extraction_confidence": 0.98,
+    "notes": "Candidate percentages, poll type, and date were identified."
+  }
+]
