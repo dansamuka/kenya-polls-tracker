@@ -1,1 +1,23 @@
-[]
+[
+  {
+    "date": "2026-05-14",
+    "fieldwork_dates": null,
+    "pollster": "TIFA Research",
+    "poll_type": "preferred_presidential_aspirant",
+    "question_text": null,
+    "geography": "Kenya",
+    "sample_size": null,
+    "figures": {
+      "William Ruto": 24.0,
+      "Kalonzo Musyoka": 19.0,
+      "Fred Matiang'i": 16.0,
+      "Rigathi Gachagua": 6.0,
+      "Edwin Sifuna": 9.0
+    },
+    "source_title": "TIFA National Poll 2026: Political Alignments and 2027 Election Prospects",
+    "source_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
+    "extraction_status": "AUTO_ACCEPTED",
+    "extraction_confidence": 0.98,
+    "notes": "Extracted from official TIFA PDF grouped chart: May 2026 wave of 2027 presidential race chart."
+  }
+]
