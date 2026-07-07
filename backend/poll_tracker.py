@@ -1,494 +1,509 @@
 """
-Kenya Presidential Opinion Polls Tracker backend.
+Kenya Presidential Opinion Polls Tracker - backend pipeline.
 
-Run locally:
-    python backend/poll_tracker.py
+This script discovers official polling sources, downloads official reports/pages,
+extracts candidate percentage data, and writes three JSON outputs:
 
-This script discovers official pollster releases, downloads official pages/PDFs,
-extracts candidate percentages, and writes clean records to data/polls_data.json.
-Ambiguous records are routed to data/review_queue.json.
+- data/polls_data.json
+- data/review_queue.json
+- data/sources_registry.json
+
+It is designed to run locally, through cron, or through GitHub Actions.
+
+Important design choice:
+The backend is intentionally conservative. It only publishes records to
+polls_data.json when the parser returns AUTO_ACCEPTED. Ambiguous extractions go
+to review_queue.json instead.
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import os
-import re
 import sys
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import urljoin
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from dateparser import parse as parse_date
 
-# Allow running from repository root or backend directory.
-CURRENT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = CURRENT_DIR.parent
-if str(CURRENT_DIR) not in sys.path:
-    sys.path.insert(0, str(CURRENT_DIR))
-
-from extractors import infotrak, tifa  # noqa: E402
-from extractors.pdf_parser import TRACKED_CANDIDATES, parse_pdf_bytes, parse_poll_text  # noqa: E402
-
-DATA_DIR = REPO_ROOT / "data"
-POLLS_FILE = DATA_DIR / "polls_data.json"
-REVIEW_FILE = DATA_DIR / "review_queue.json"
-SOURCES_FILE = DATA_DIR / "sources_registry.json"
-DOWNLOAD_DIR = REPO_ROOT / ".cache" / "downloads"
-
-USER_AGENT = os.getenv(
-    "KENYA_POLLS_USER_AGENT",
-    "KenyaPollsTracker/1.0 (+https://github.com/your-org/kenya-polls-tracker)",
-)
-REQUEST_TIMEOUT = int(os.getenv("KENYA_POLLS_TIMEOUT", "30"))
-ENABLE_TWITTER_DISCOVERY = os.getenv("ENABLE_TWITTER_DISCOVERY", "false").lower() == "true"
-
-OFFICIAL_DOMAINS = ["tifaresearch.com", "www.tifaresearch.com", "infotrakresearch.com", "www.infotrakresearch.com"]
+from extractors import infotrak, tifa
+from extractors.pdf_parser import parse_pdf_bytes, parse_poll_text
 
 
-class PollTrackerError(Exception):
-    """Base error for tracker operations."""
+ROOT_DIR = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT_DIR / "data"
+
+POLLS_DATA_PATH = DATA_DIR / "polls_data.json"
+REVIEW_QUEUE_PATH = DATA_DIR / "review_queue.json"
+SOURCES_REGISTRY_PATH = DATA_DIR / "sources_registry.json"
+
+REQUEST_TIMEOUT = 45
+
+HEADERS = {
+    "User-Agent": (
+        "KenyaPollsTracker/1.0 "
+        "(primary-source polling monitor; contact: repository owner)"
+    )
+}
+
+TRACKED_CANDIDATES = [
+    "William Ruto",
+    "Kalonzo Musyoka",
+    "Fred Matiang'i",
+    "Rigathi Gachagua",
+    "Edwin Sifuna",
+]
+
+# These are official source URLs, not sample data.
+# They ensure the pipeline has a known valid official report to check even if
+# discovery pages change layout or hide article links behind scripts.
+SEED_SOURCES: List[Dict[str, Optional[str]]] = [
+    {
+        "pollster": "TIFA Research",
+        "title": "TIFA National Poll 2026: Political Alignments and 2027 Election Prospects",
+        "page_url": "https://www.tifaresearch.com/tifa-national-poll-2026-1st-release-on-political-alignments-and-2027-election-prospects/",
+        "pdf_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
+        "published_date": "2026-05-14",
+    }
+]
 
 
 def utc_now_iso() -> str:
-    """Return current UTC timestamp in ISO format."""
+    """Return the current UTC time in ISO format."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def ensure_data_files() -> None:
-    """Create required directories and empty JSON files if missing."""
+    """Ensure required data directory and JSON files exist."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    for path in [POLLS_FILE, REVIEW_FILE, SOURCES_FILE]:
+
+    for path in [POLLS_DATA_PATH, REVIEW_QUEUE_PATH, SOURCES_REGISTRY_PATH]:
         if not path.exists():
-            path.write_text("[]\n", encoding="utf-8")
+            write_json(path, [])
 
 
-def load_json_list(path: Path) -> List[Dict[str, Any]]:
-    """Load a JSON list safely."""
+def read_json(path: Path, default: Any) -> Any:
+    """Read JSON safely, returning default on missing or invalid files."""
     if not path.exists():
-        return []
+        return default
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
     except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
+        print(f"Warning: {path} contained invalid JSON. Using default.", file=sys.stderr)
+        return default
 
 
-def write_json_list(path: Path, data: List[Dict[str, Any]]) -> bool:
-    """Write JSON list and return True if file content changed."""
-    new_text = json.dumps(data, indent=2, ensure_ascii=False, sort_keys=False) + "\n"
-    old_text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if new_text != old_text:
-        path.write_text(new_text, encoding="utf-8")
-        return True
-    return False
+def write_json(path: Path, data: Any) -> None:
+    """Write formatted JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
 
 
-def stable_source_id(pollster: str, title: str, url: str) -> str:
-    """Generate stable deterministic source ID."""
-    raw = f"{pollster}|{title}|{url}".lower().strip().encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()[:20]
+def stable_id(value: str) -> str:
+    """Create a stable short ID from a URL or identifying value."""
+    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:20]
 
 
 def sha256_bytes(content: bytes) -> str:
-    """Calculate SHA-256 hash for bytes."""
+    """Return SHA-256 hash of bytes."""
     return hashlib.sha256(content).hexdigest()
 
 
-def normalize_date(value: Optional[str]) -> Optional[str]:
-    """Normalize a date-like string into YYYY-MM-DD when possible."""
-    if not value:
-        return None
-    value = value.strip()
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        return value
-    parsed = parse_date(value, settings={"DATE_ORDER": "DMY", "PREFER_DATES_FROM": "past"})
-    if parsed and 2000 <= parsed.year <= datetime.utcnow().year + 1:
-        return parsed.date().isoformat()
-    return None
+def source_key(source: Dict[str, Any]) -> str:
+    """Use PDF URL first, otherwise page URL, as the stable source key."""
+    return source.get("pdf_url") or source.get("page_url") or source.get("title") or ""
 
 
-def is_official_url(url: Optional[str]) -> bool:
-    """Check that a URL belongs to a monitored official domain."""
-    if not url:
-        return False
-    lowered = url.lower()
-    return any(domain in lowered for domain in OFFICIAL_DOMAINS)
+def is_probably_pdf(url: str) -> bool:
+    """Return True if URL path looks like a PDF."""
+    return urlparse(url).path.lower().endswith(".pdf")
 
 
-def http_get(url: str, accept: str = "*/*") -> requests.Response:
-    """Make a polite HTTP GET request."""
-    response = requests.get(
-        url,
-        timeout=REQUEST_TIMEOUT,
-        headers={"User-Agent": USER_AGENT, "Accept": accept},
-    )
-    response.raise_for_status()
-    return response
-
-
-def discover_all_sources() -> List[Dict[str, Any]]:
-    """Run all official source discovery modules."""
-    discovered: List[Dict[str, Any]] = []
-    for discoverer in [tifa.discover_sources, infotrak.discover_sources]:
-        try:
-            discovered.extend(discoverer(timeout=REQUEST_TIMEOUT))
-        except Exception as exc:  # noqa: BLE001
-            print(f"Warning: source discovery failed for {discoverer.__module__}: {exc}")
-    if ENABLE_TWITTER_DISCOVERY:
-        discovered.extend(discover_twitter_sources())
-    return discovered
-
-
-def discover_twitter_sources() -> List[Dict[str, Any]]:
-    """
-    Optional X/Twitter discovery using Tweepy.
-
-    This is disabled by default. It requires X API credentials and should only be
-    used to discover official report links, not as the source of poll numbers.
-    """
-    try:
-        import tweepy  # type: ignore
-    except ImportError:
-        print("Warning: tweepy is not installed; skipping optional X discovery.")
-        return []
-
-    bearer_token = os.getenv("X_BEARER_TOKEN")
-    if not bearer_token:
-        print("Warning: ENABLE_TWITTER_DISCOVERY=true but X_BEARER_TOKEN is missing.")
-        return []
-
-    client = tweepy.Client(bearer_token=bearer_token, wait_on_rate_limit=True)
-    accounts = ["TifaResearch", "InfotrakKenya"]
-    keywords = [
-        "presidential poll",
-        "popularity",
-        "approval rating",
-        "candidate ranking",
-        "Kenya poll",
-        "2027 poll",
-    ]
-    sources: List[Dict[str, Any]] = []
-    for account in accounts:
-        query = f"from:{account} ({' OR '.join([repr(k) for k in keywords])}) -is:retweet"
-        try:
-            response = client.search_recent_tweets(
-                query=query,
-                tweet_fields=["created_at", "entities"],
-                max_results=25,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"Warning: X discovery failed for @{account}: {exc}")
-            continue
-        for tweet in response.data or []:
-            urls = []
-            entities = getattr(tweet, "entities", None) or {}
-            for item in entities.get("urls", []):
-                expanded = item.get("expanded_url") or item.get("url")
-                if expanded:
-                    urls.append(expanded)
-            for url in urls:
-                if not is_official_url(url):
-                    continue
-                sources.append(
-                    {
-                        "pollster": "TIFA Research" if account == "TifaResearch" else "Infotrak Research",
-                        "title": f"Official X discovery from @{account}",
-                        "page_url": url,
-                        "pdf_url": url if url.lower().split("?")[0].endswith(".pdf") else None,
-                        "published_date": getattr(tweet, "created_at", None).date().isoformat()
-                        if getattr(tweet, "created_at", None)
-                        else None,
-                    }
-                )
-    return sources
-
-
-def merge_sources(discovered: List[Dict[str, Any]], registry: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
-    """Merge discovered sources into registry and return updated registry and count of new items."""
-    now = utc_now_iso()
-    by_key = {}
-    for item in registry:
-        key = item.get("source_id") or stable_source_id(
-            item.get("pollster", ""), item.get("title", ""), item.get("pdf_url") or item.get("page_url") or ""
-        )
-        item["source_id"] = key
-        by_key[key] = item
-
-    new_count = 0
-    for src in discovered:
-        pollster = src.get("pollster") or "Unknown"
-        title = (src.get("title") or "Untitled official source").strip()
-        page_url = src.get("page_url")
-        pdf_url = src.get("pdf_url")
-        canonical_url = pdf_url or page_url
-        if not canonical_url or not is_official_url(canonical_url):
-            continue
-        source_id = stable_source_id(pollster, title, canonical_url)
-        published_date = normalize_date(src.get("published_date"))
-        if source_id not in by_key:
-            by_key[source_id] = {
-                "source_id": source_id,
-                "pollster": pollster,
-                "title": title,
-                "page_url": page_url,
-                "pdf_url": pdf_url,
-                "published_date": published_date,
-                "first_seen_at": now,
-                "last_checked_at": now,
-                "sha256": None,
-                "processing_status": "discovered",
-            }
-            new_count += 1
-        else:
-            by_key[source_id]["last_checked_at"] = now
-            if pdf_url and not by_key[source_id].get("pdf_url"):
-                by_key[source_id]["pdf_url"] = pdf_url
-            if published_date and not by_key[source_id].get("published_date"):
-                by_key[source_id]["published_date"] = published_date
-
-    merged = sorted(by_key.values(), key=lambda x: (x.get("published_date") or "9999-99-99", x.get("title") or ""))
-    return merged, new_count
-
-
-def discover_pdf_from_page(page_url: str) -> Optional[str]:
-    """Fetch an official article page and find the most likely PDF link."""
-    response = http_get(page_url, accept="text/html,application/xhtml+xml")
-    soup = BeautifulSoup(response.text, "html.parser")
-    candidates = []
-    for link in soup.select("a[href]"):
-        href = link.get("href", "").strip()
-        absolute = urljoin(page_url, href)
-        label = link.get_text(" ", strip=True).lower()
-        if absolute.lower().split("?")[0].endswith(".pdf"):
-            candidates.append(absolute)
-        elif "download" in label and ".pdf" in absolute.lower():
-            candidates.append(absolute)
-    for candidate in candidates:
-        if is_official_url(candidate):
-            return candidate
-    return candidates[0] if candidates else None
-
-
-def extract_text_from_page(page_url: str) -> str:
-    """Extract visible article text from an official HTML page."""
-    response = http_get(page_url, accept="text/html,application/xhtml+xml")
-    soup = BeautifulSoup(response.text, "html.parser")
-    for bad in soup.select("script,style,noscript,svg,iframe"):
-        bad.decompose()
-    article = soup.select_one("article") or soup.select_one("main") or soup.body or soup
-    return article.get_text("\n", strip=True)
-
-
-def download_pdf(pdf_url: str) -> bytes:
-    """Download PDF bytes from official URL."""
-    response = http_get(pdf_url, accept="application/pdf,*/*")
-    content_type = response.headers.get("content-type", "").lower()
-    if "pdf" not in content_type and not pdf_url.lower().split("?")[0].endswith(".pdf"):
-        raise PollTrackerError(f"URL did not appear to return a PDF: {pdf_url}")
-    return response.content
-
-
-def record_key(record: Dict[str, Any]) -> str:
-    """Deduplication key for public poll records."""
-    return "|".join(
-        [
-            str(record.get("source_url") or ""),
-            str(record.get("pollster") or ""),
-            str(record.get("poll_type") or ""),
-            str(record.get("date") or ""),
-        ]
-    ).lower()
-
-
-def normalize_figures(figures: Dict[str, Any]) -> Dict[str, Optional[float]]:
-    """Ensure all tracked candidates exist and values are float/null."""
-    normalized: Dict[str, Optional[float]] = {}
-    for candidate in TRACKED_CANDIDATES:
-        value = figures.get(candidate)
-        if isinstance(value, (int, float)) and 0 <= float(value) <= 100:
-            normalized[candidate] = round(float(value), 2)
-        else:
-            normalized[candidate] = None
-    return normalized
-
-
-def merge_poll_records(existing: List[Dict[str, Any]], new_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge public poll records, replacing duplicates only with higher confidence."""
-    by_key: Dict[str, Dict[str, Any]] = {record_key(item): item for item in existing if record_key(item).strip("|")}
-    for record in new_records:
-        key = record_key(record)
-        if not key.strip("|"):
-            continue
-        record["figures"] = normalize_figures(record.get("figures") or {})
-        existing_record = by_key.get(key)
-        if not existing_record:
-            by_key[key] = record
-            continue
-        old_conf = float(existing_record.get("extraction_confidence") or 0)
-        new_conf = float(record.get("extraction_confidence") or 0)
-        if new_conf >= old_conf:
-            by_key[key] = record
-    return sorted(by_key.values(), key=lambda item: (item.get("date") or "9999-99-99", item.get("pollster") or ""))
-
-
-def review_key(item: Dict[str, Any]) -> str:
-    """Deduplication key for review queue."""
-    return str(item.get("source_id") or item.get("source_url") or item.get("title") or "").lower()
-
-
-def merge_review_items(existing: List[Dict[str, Any]], new_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Merge review queue items without duplicates."""
-    by_key = {review_key(item): item for item in existing if review_key(item)}
-    for item in new_items:
-        by_key[review_key(item)] = item
-    return sorted(by_key.values(), key=lambda item: item.get("created_at") or "")
-
-
-def build_public_record(source: Dict[str, Any], parsed: Any, source_url: str) -> Dict[str, Any]:
-    """Build normalized public poll record."""
+def clean_source(source: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    """Normalize source dictionary fields."""
     return {
-        "date": parsed.poll_date,
-        "fieldwork_dates": parsed.fieldwork_dates,
-        "pollster": source.get("pollster"),
-        "poll_type": parsed.poll_type,
-        "question_text": parsed.question_text,
-        "geography": "Kenya",
-        "sample_size": parsed.sample_size,
-        "figures": normalize_figures(parsed.figures),
-        "source_title": source.get("title"),
-        "source_url": source_url,
-        "extraction_status": parsed.status,
-        "extraction_confidence": parsed.confidence,
-        "notes": parsed.reason,
+        "pollster": source.get("pollster") or "Unknown",
+        "title": source.get("title") or f"{source.get('pollster', 'Unknown')} poll release",
+        "page_url": source.get("page_url"),
+        "pdf_url": source.get("pdf_url"),
+        "published_date": source.get("published_date"),
     }
 
 
-def build_review_item(source: Dict[str, Any], parsed: Any, source_url: str) -> Dict[str, Any]:
-    """Build review queue item."""
-    extracted = {k: v for k, v in parsed.figures.items() if isinstance(v, (int, float))}
+def dedupe_sources(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate sources using PDF URL or page URL."""
+    seen = set()
+    output: List[Dict[str, Any]] = []
+
+    for raw in sources:
+        source = clean_source(raw)
+        key = source_key(source)
+
+        if not key or key in seen:
+            continue
+
+        seen.add(key)
+        output.append(source)
+
+    return output
+
+
+def download_url(url: str) -> bytes:
+    """Download a URL and return response bytes."""
+    response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    return response.content
+
+
+def fetch_page_text(url: str) -> str:
+    """Fetch a normal HTML page and extract visible text."""
+    response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+
+    return soup.get_text("\n", strip=True)
+
+
+def registry_index(registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Index registry records by source_id."""
     return {
-        "source_id": source.get("source_id"),
+        item.get("source_id"): item
+        for item in registry
+        if item.get("source_id")
+    }
+
+
+def build_registry_record(
+    source: Dict[str, Any],
+    status: str,
+    content_hash: Optional[str] = None,
+    existing: Optional[Dict[str, Any]] = None,
+    processing_error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create or update a source registry record."""
+    key = source_key(source)
+    source_id = stable_id(key)
+
+    first_seen_at = existing.get("first_seen_at") if existing else utc_now_iso()
+
+    record = {
+        "source_id": source_id,
+        "pollster": source.get("pollster"),
+        "title": source.get("title"),
+        "page_url": source.get("page_url"),
+        "pdf_url": source.get("pdf_url"),
+        "published_date": source.get("published_date"),
+        "first_seen_at": first_seen_at,
+        "last_checked_at": utc_now_iso(),
+        "sha256": content_hash,
+        "processing_status": status,
+    }
+
+    if processing_error:
+        record["processing_error"] = processing_error
+
+    return record
+
+
+def build_public_record(
+    source: Dict[str, Any],
+    parse_result: Any,
+) -> Dict[str, Any]:
+    """Convert an AUTO_ACCEPTED parse result into a public poll record."""
+    figures = {}
+
+    for candidate in TRACKED_CANDIDATES:
+        value = parse_result.figures.get(candidate)
+        figures[candidate] = value if value is not None else None
+
+    return {
+        "date": parse_result.poll_date,
+        "fieldwork_dates": parse_result.fieldwork_dates,
+        "pollster": source.get("pollster"),
+        "poll_type": parse_result.poll_type,
+        "question_text": parse_result.question_text,
+        "geography": "Kenya",
+        "sample_size": parse_result.sample_size,
+        "figures": figures,
+        "source_title": source.get("title"),
+        "source_url": source.get("pdf_url") or source.get("page_url"),
+        "extraction_status": parse_result.status,
+        "extraction_confidence": parse_result.confidence,
+        "notes": parse_result.reason,
+    }
+
+
+def build_review_item(
+    source: Dict[str, Any],
+    parse_result: Any,
+    reason_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Convert a NEEDS_REVIEW or processing failure into a review queue item."""
+    source_url = source.get("pdf_url") or source.get("page_url")
+    source_id = stable_id(source_url or source.get("title") or "")
+
+    extracted_candidates = {}
+
+    if hasattr(parse_result, "figures"):
+        extracted_candidates = {
+            name: value
+            for name, value in parse_result.figures.items()
+            if value is not None
+        }
+
+    return {
+        "source_id": source_id,
         "pollster": source.get("pollster"),
         "title": source.get("title"),
         "source_url": source_url,
-        "reason": parsed.reason,
-        "extracted_candidates": extracted,
-        "raw_snippet": parsed.raw_snippet[:1200],
+        "reason": reason_override or getattr(parse_result, "reason", "Needs review"),
+        "extracted_candidates": extracted_candidates,
+        "raw_snippet": getattr(parse_result, "raw_snippet", ""),
         "created_at": utc_now_iso(),
     }
 
 
-def process_source(source: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], str, bool]:
+def dedupe_poll_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Process one source.
+    Deduplicate poll records.
 
-    Returns: public_record, review_item, processing_status, processed_pdf_flag
+    If a duplicate exists, keep the higher-confidence record.
     """
-    source_url = source.get("pdf_url") or None
-    processed_pdf = False
+    by_key: Dict[str, Dict[str, Any]] = {}
 
-    try:
-        if not source_url and source.get("page_url"):
-            maybe_pdf = discover_pdf_from_page(source["page_url"])
-            if maybe_pdf:
-                source["pdf_url"] = maybe_pdf
-                source_url = maybe_pdf
+    for record in records:
+        key = "|".join(
+            [
+                str(record.get("source_url")),
+                str(record.get("pollster")),
+                str(record.get("poll_type")),
+                str(record.get("date")),
+            ]
+        )
 
-        if source_url:
-            pdf_bytes = download_pdf(source_url)
-            digest = sha256_bytes(pdf_bytes)
-            source["sha256"] = digest
-            (DOWNLOAD_DIR / f"{digest}.pdf").write_bytes(pdf_bytes)
-            parsed = parse_pdf_bytes(pdf_bytes, fallback_date=source.get("published_date"))
-            processed_pdf = True
-        elif source.get("page_url"):
-            page_text = extract_text_from_page(source["page_url"])
-            digest = hashlib.sha256(page_text.encode("utf-8")).hexdigest()
-            source["sha256"] = digest
-            parsed = parse_poll_text(page_text, fallback_date=source.get("published_date"))
-            source_url = source["page_url"]
-        else:
-            return None, None, "rejected_no_url", False
-    except Exception as exc:  # noqa: BLE001
-        source["processing_error"] = str(exc)
-        return None, build_review_item(
-            source,
-            type(
-                "ParsedFailure",
-                (),
-                {
-                    "figures": {candidate: None for candidate in TRACKED_CANDIDATES},
-                    "reason": f"Processing failed: {exc}",
-                    "raw_snippet": "",
-                },
-            )(),
-            source.get("pdf_url") or source.get("page_url") or "",
-        ), "needs_review_processing_error", processed_pdf
+        current = by_key.get(key)
 
-    if parsed.status == "AUTO_ACCEPTED" and is_official_url(source_url):
-        return build_public_record(source, parsed, source_url), None, "processed", processed_pdf
-    if parsed.status == "NEEDS_REVIEW":
-        return None, build_review_item(source, parsed, source_url), "needs_review", processed_pdf
-    return None, None, "rejected", processed_pdf
-
-
-def run() -> None:
-    """Main scheduled job entry point."""
-    ensure_data_files()
-    existing_polls = load_json_list(POLLS_FILE)
-    existing_review = load_json_list(REVIEW_FILE)
-    registry = load_json_list(SOURCES_FILE)
-
-    discovered = discover_all_sources()
-    registry, new_source_count = merge_sources(discovered, registry)
-
-    existing_hashes = {item.get("sha256") for item in registry if item.get("sha256")}
-    new_records: List[Dict[str, Any]] = []
-    new_review: List[Dict[str, Any]] = []
-    processed_pdf_count = 0
-    rejected_count = 0
-
-    for source in registry:
-        # Reprocess discovered/needs_review items; skip already processed/rejected unless no hash exists.
-        status = source.get("processing_status")
-        if status == "processed" and source.get("sha256"):
+        if current is None:
+            by_key[key] = record
             continue
 
-        public_record, review_item, processing_status, processed_pdf = process_source(source)
-        source["processing_status"] = processing_status
-        source["last_checked_at"] = utc_now_iso()
-        if processed_pdf:
-            processed_pdf_count += 1
-        if public_record:
-            new_records.append(public_record)
-        if review_item:
-            new_review.append(review_item)
-        if processing_status.startswith("rejected") or processing_status == "rejected":
-            rejected_count += 1
+        if float(record.get("extraction_confidence") or 0) > float(
+            current.get("extraction_confidence") or 0
+        ):
+            by_key[key] = record
 
-    updated_polls = merge_poll_records(existing_polls, new_records)
-    updated_review = merge_review_items(existing_review, new_review)
+    return sorted(
+        by_key.values(),
+        key=lambda item: item.get("date") or "",
+    )
 
-    polls_changed = write_json_list(POLLS_FILE, updated_polls)
-    review_changed = write_json_list(REVIEW_FILE, updated_review)
-    registry_changed = write_json_list(SOURCES_FILE, registry)
 
-    print(f"Sources discovered: {len(discovered)}")
-    print(f"New sources added: {new_source_count}")
-    print(f"New PDFs processed: {processed_pdf_count}")
-    print(f"Records auto-accepted: {len(new_records)}")
-    print(f"Items sent to review: {len(new_review)}")
-    print(f"Rejected items: {rejected_count}")
-    print(f"polls_data.json updated: {'yes' if polls_changed else 'no'}")
-    print(f"review_queue.json updated: {'yes' if review_changed else 'no'}")
-    print(f"sources_registry.json updated: {'yes' if registry_changed else 'no'}")
+def dedupe_review_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate review queue items by source_id and reason."""
+    seen = set()
+    output = []
+
+    for item in items:
+        key = f"{item.get('source_id')}|{item.get('reason')}"
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        output.append(item)
+
+    return output
+
+
+def discover_all_sources() -> List[Dict[str, Any]]:
+    """Run all configured discovery modules and append seed sources."""
+    sources: List[Dict[str, Any]] = []
+
+    try:
+        sources.extend(tifa.discover_sources())
+    except Exception as exc:  # noqa: BLE001
+        print(f"TIFA discovery failed: {exc}", file=sys.stderr)
+
+    try:
+        sources.extend(infotrak.discover_sources())
+    except Exception as exc:  # noqa: BLE001
+        print(f"Infotrak discovery failed: {exc}", file=sys.stderr)
+
+    sources.extend(SEED_SOURCES)
+
+    return dedupe_sources(sources)
+
+
+def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Download/process one source and return processing outputs.
+
+    Return shape:
+    {
+      "registry_status": str,
+      "content_hash": str | None,
+      "public_record": dict | None,
+      "review_item": dict | None,
+      "error": str | None
+    }
+    """
+    fallback_date = source.get("published_date")
+    source_url = source.get("pdf_url") or source.get("page_url")
+
+    if not source_url:
+        return {
+            "registry_status": "rejected",
+            "content_hash": None,
+            "public_record": None,
+            "review_item": None,
+            "error": "Source has no URL.",
+        }
+
+    try:
+        if source.get("pdf_url") or is_probably_pdf(source_url):
+            content = download_url(source_url)
+            content_hash = sha256_bytes(content)
+            parse_result = parse_pdf_bytes(content, fallback_date=fallback_date)
+        else:
+            text = fetch_page_text(source_url)
+            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            parse_result = parse_poll_text(text, fallback_date=fallback_date)
+
+    except Exception as exc:  # noqa: BLE001
+        review_item = build_review_item(
+            source=source,
+            parse_result=object(),
+            reason_override=f"Processing failed: {exc}",
+        )
+
+        return {
+            "registry_status": "needs_review_processing_error",
+            "content_hash": None,
+            "public_record": None,
+            "review_item": review_item,
+            "error": str(exc),
+        }
+
+    if parse_result.status == "AUTO_ACCEPTED":
+        return {
+            "registry_status": "processed",
+            "content_hash": content_hash,
+            "public_record": build_public_record(source, parse_result),
+            "review_item": None,
+            "error": None,
+        }
+
+    if parse_result.status == "NEEDS_REVIEW":
+        return {
+            "registry_status": "needs_review",
+            "content_hash": content_hash,
+            "public_record": None,
+            "review_item": build_review_item(source, parse_result),
+            "error": None,
+        }
+
+    return {
+        "registry_status": "rejected",
+        "content_hash": content_hash,
+        "public_record": None,
+        "review_item": None,
+        "error": parse_result.reason,
+    }
+
+
+def main() -> None:
+    """Run full polling update pipeline."""
+    ensure_data_files()
+
+    existing_polls = read_json(POLLS_DATA_PATH, [])
+    existing_review = read_json(REVIEW_QUEUE_PATH, [])
+    existing_registry = read_json(SOURCES_REGISTRY_PATH, [])
+
+    registry_by_id = registry_index(existing_registry)
+
+    discovered_sources = discover_all_sources()
+
+    new_public_records = []
+    new_review_items = []
+    updated_registry = registry_by_id.copy()
+
+    summary = {
+        "sources_discovered": len(discovered_sources),
+        "new_pdfs_or_pages_processed": 0,
+        "records_auto_accepted": 0,
+        "items_sent_to_review": 0,
+        "rejected_items": 0,
+        "polls_data_updated": "no",
+    }
+
+    for source in discovered_sources:
+        key = source_key(source)
+        source_id = stable_id(key)
+        existing_registry_record = updated_registry.get(source_id)
+
+        result = process_source(source)
+
+        summary["new_pdfs_or_pages_processed"] += 1
+
+        updated_registry[source_id] = build_registry_record(
+            source=source,
+            status=result["registry_status"],
+            content_hash=result["content_hash"],
+            existing=existing_registry_record,
+            processing_error=result["error"]
+            if result["registry_status"] == "needs_review_processing_error"
+            else None,
+        )
+
+        if result["public_record"]:
+            new_public_records.append(result["public_record"])
+            summary["records_auto_accepted"] += 1
+
+        elif result["review_item"]:
+            new_review_items.append(result["review_item"])
+            summary["items_sent_to_review"] += 1
+
+        else:
+            summary["rejected_items"] += 1
+
+    merged_polls = dedupe_poll_records(existing_polls + new_public_records)
+    merged_review = dedupe_review_items(existing_review + new_review_items)
+
+    registry_list = sorted(
+        updated_registry.values(),
+        key=lambda item: (
+            item.get("pollster") or "",
+            item.get("title") or "",
+            item.get("page_url") or "",
+            item.get("pdf_url") or "",
+        ),
+    )
+
+    if merged_polls != existing_polls:
+        summary["polls_data_updated"] = "yes"
+
+    write_json(POLLS_DATA_PATH, merged_polls)
+    write_json(REVIEW_QUEUE_PATH, merged_review)
+    write_json(SOURCES_REGISTRY_PATH, registry_list)
+
+    print(f"Sources discovered: {summary['sources_discovered']}")
+    print(f"New PDFs/pages processed: {summary['new_pdfs_or_pages_processed']}")
+    print(f"Records auto-accepted: {summary['records_auto_accepted']}")
+    print(f"Items sent to review: {summary['items_sent_to_review']}")
+    print(f"Rejected items: {summary['rejected_items']}")
+    print(f"polls_data.json updated: {summary['polls_data_updated']}")
 
 
 if __name__ == "__main__":
-    run()
+    main()
