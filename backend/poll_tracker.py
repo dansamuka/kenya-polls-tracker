@@ -1,54 +1,27 @@
 """
-Kenya Presidential Opinion Polls Tracker - backend pipeline.
+PDF and text parsing utilities for the Kenya Presidential Opinion Polls Tracker.
 
-This script discovers official polling sources, downloads official reports/pages,
-extracts candidate percentage data, and writes three JSON outputs:
+The parser is intentionally conservative. It attempts to extract candidate-name /
+percentage pairs from official poll reports, but only returns AUTO_ACCEPTED when
+minimum confidence thresholds are met. Ambiguous items should be routed to the
+review queue rather than published.
 
-- data/polls_data.json
-- data/review_queue.json
-- data/sources_registry.json
-
-It is designed to run locally, through cron, or through GitHub Actions.
-
-Important design choice:
-The backend is intentionally conservative. It only publishes records to
-polls_data.json when the parser returns AUTO_ACCEPTED. Ambiguous extractions go
-to review_queue.json instead.
+Special handling is included for TIFA-style grouped bar charts where percentages
+appear before candidate labels in extracted PDF text.
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+import io
+import re
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
-import requests
-from bs4 import BeautifulSoup
-
-from extractors import infotrak, tifa
-from extractors.pdf_parser import parse_pdf_bytes, parse_poll_text
+import pdfplumber
+from dateparser.search import search_dates
 
 
-ROOT_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = ROOT_DIR / "data"
-
-POLLS_DATA_PATH = DATA_DIR / "polls_data.json"
-REVIEW_QUEUE_PATH = DATA_DIR / "review_queue.json"
-SOURCES_REGISTRY_PATH = DATA_DIR / "sources_registry.json"
-
-REQUEST_TIMEOUT = 45
-
-HEADERS = {
-    "User-Agent": (
-        "KenyaPollsTracker/1.0 "
-        "(primary-source polling monitor; contact: repository owner)"
-    )
-}
-
-TRACKED_CANDIDATES = [
+TRACKED_CANDIDATES: List[str] = [
     "William Ruto",
     "Kalonzo Musyoka",
     "Fred Matiang'i",
@@ -56,454 +29,551 @@ TRACKED_CANDIDATES = [
     "Edwin Sifuna",
 ]
 
-# These are official source URLs, not sample data.
-# They ensure the pipeline has a known valid official report to check even if
-# discovery pages change layout or hide article links behind scripts.
-SEED_SOURCES: List[Dict[str, Optional[str]]] = [
-    {
-        "pollster": "TIFA Research",
-        "title": "TIFA National Poll 2026: Political Alignments and 2027 Election Prospects",
-        "page_url": "https://www.tifaresearch.com/tifa-national-poll-2026-1st-release-on-political-alignments-and-2027-election-prospects/",
-        "pdf_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
-        "published_date": "2026-05-14",
-    }
+
+CANDIDATE_ALIASES: Dict[str, List[str]] = {
+    "William Ruto": [
+        "William Ruto",
+        "Ruto",
+        "President Ruto",
+    ],
+    "Kalonzo Musyoka": [
+        "Kalonzo Musyoka",
+        "Kalonzo",
+    ],
+    "Fred Matiang'i": [
+        "Fred Matiang'i",
+        "Fred Matiang’i",
+        "Matiang'i",
+        "Matiang’i",
+        "Dr Fred Matiang'i",
+        "Dr Fred Matiang’i",
+    ],
+    "Rigathi Gachagua": [
+        "Rigathi Gachagua",
+        "Gachagua",
+    ],
+    "Edwin Sifuna": [
+        "Edwin Sifuna",
+        "Sifuna",
+    ],
+}
+
+
+POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
+    (
+        "preferred_presidential_candidate",
+        [
+            "preferred presidential candidate",
+            "presidential candidate preference",
+        ],
+    ),
+    (
+        "preferred_presidential_aspirant",
+        [
+            "preferred presidential aspirant",
+            "presidential aspirant",
+            "presidential hopeful",
+            "2027 presidential race",
+            "presidential race",
+            "presidential contest",
+            "2027 election prospects",
+            "election prospects",
+        ],
+    ),
+    (
+        "approval_rating",
+        [
+            "approval rating",
+            "approve",
+            "disapprove",
+            "performance rating",
+        ],
+    ),
+    (
+        "popularity_rating",
+        [
+            "popularity",
+            "popular",
+            "most popular",
+            "candidate popularity",
+            "presidential candidates popularity",
+        ],
+    ),
+    (
+        "party_support",
+        [
+            "party support",
+            "political party",
+            "party popularity",
+        ],
+    ),
 ]
 
 
-def utc_now_iso() -> str:
-    """Return the current UTC time in ISO format."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+PERCENT_RE = re.compile(
+    r"(?P<value>\d{1,2}(?:\.\d+)?|100(?:\.0+)?)\s*(?:%|percent|per\s*cent)\b",
+    re.IGNORECASE,
+)
 
 
-def ensure_data_files() -> None:
-    """Ensure required data directory and JSON files exist."""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    for path in [POLLS_DATA_PATH, REVIEW_QUEUE_PATH, SOURCES_REGISTRY_PATH]:
-        if not path.exists():
-            write_json(path, [])
+SAMPLE_SIZE_RE = re.compile(
+    r"(?:sample size|sample|n)\s*[:=]?\s*(?:of\s*)?(?P<n>\d{3,6})",
+    re.IGNORECASE,
+)
 
 
-def read_json(path: Path, default: Any) -> Any:
-    """Read JSON safely, returning default on missing or invalid files."""
-    if not path.exists():
-        return default
-
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except json.JSONDecodeError:
-        print(f"Warning: {path} contained invalid JSON. Using default.", file=sys.stderr)
-        return default
+FIELDWORK_RE = re.compile(
+    r"(?:fieldwork|data collection|interviews conducted|conducted)\s*"
+    r"(?:was\s*)?(?:between|from)?\s*(?P<dates>.{0,100})",
+    re.IGNORECASE,
+)
 
 
-def write_json(path: Path, data: Any) -> None:
-    """Write formatted JSON."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2, ensure_ascii=False)
-        handle.write("\n")
+QUESTION_RE = re.compile(
+    r"(?:question|asked)\s*[:\-]\s*(?P<question>.{20,250}?)(?:\n|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
-def stable_id(value: str) -> str:
-    """Create a stable short ID from a URL or identifying value."""
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:20]
+@dataclass
+class ParseResult:
+    status: str
+    figures: Dict[str, Optional[float]]
+    poll_type: str
+    poll_date: Optional[str]
+    fieldwork_dates: Optional[str]
+    sample_size: Optional[int]
+    question_text: Optional[str]
+    confidence: float
+    raw_snippet: str
+    reason: str
 
 
-def sha256_bytes(content: bytes) -> str:
-    """Return SHA-256 hash of bytes."""
-    return hashlib.sha256(content).hexdigest()
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    """Extract plain text from PDF bytes using pdfplumber."""
+    text_parts: List[str] = []
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                text_parts.append(page_text)
+
+    return "\n".join(text_parts)
 
 
-def source_key(source: Dict[str, Any]) -> str:
-    """Use PDF URL first, otherwise page URL, as the stable source key."""
-    return source.get("pdf_url") or source.get("page_url") or source.get("title") or ""
+def normalize_text(text: str) -> str:
+    """Normalize common punctuation and whitespace inconsistencies."""
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
+    text = text.replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("\u2013", "-").replace("\u2014", "-")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
-def is_probably_pdf(url: str) -> bool:
-    """Return True if URL path looks like a PDF."""
-    return urlparse(url).path.lower().endswith(".pdf")
+def classify_poll_type(text: str) -> Tuple[str, float]:
+    """Infer the poll type using keyword signals."""
+    lower = text.lower()
+    best_type = "unknown"
+    best_score = 0.0
+
+    for poll_type, keywords in POLL_TYPE_KEYWORDS:
+        matches = sum(1 for keyword in keywords if keyword in lower)
+        if matches:
+            score = min(1.0, 0.35 + matches * 0.2)
+            if score > best_score:
+                best_type = poll_type
+                best_score = score
+
+    return best_type, best_score
 
 
-def clean_source(source: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    """Normalize source dictionary fields."""
-    return {
-        "pollster": source.get("pollster") or "Unknown",
-        "title": source.get("title") or f"{source.get('pollster', 'Unknown')} poll release",
-        "page_url": source.get("page_url"),
-        "pdf_url": source.get("pdf_url"),
-        "published_date": source.get("published_date"),
-    }
-
-
-def dedupe_sources(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate sources using PDF URL or page URL."""
-    seen = set()
-    output: List[Dict[str, Any]] = []
-
-    for raw in sources:
-        source = clean_source(raw)
-        key = source_key(source)
-
-        if not key or key in seen:
-            continue
-
-        seen.add(key)
-        output.append(source)
-
-    return output
-
-
-def download_url(url: str) -> bytes:
-    """Download a URL and return response bytes."""
-    response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    return response.content
-
-
-def fetch_page_text(url: str) -> str:
-    """Fetch a normal HTML page and extract visible text."""
-    response = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    for tag in soup(["script", "style", "noscript", "svg"]):
-        tag.decompose()
-
-    return soup.get_text("\n", strip=True)
-
-
-def registry_index(registry: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """Index registry records by source_id."""
-    return {
-        item.get("source_id"): item
-        for item in registry
-        if item.get("source_id")
-    }
-
-
-def build_registry_record(
-    source: Dict[str, Any],
-    status: str,
-    content_hash: Optional[str] = None,
-    existing: Optional[Dict[str, Any]] = None,
-    processing_error: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Create or update a source registry record."""
-    key = source_key(source)
-    source_id = stable_id(key)
-
-    first_seen_at = existing.get("first_seen_at") if existing else utc_now_iso()
-
-    record = {
-        "source_id": source_id,
-        "pollster": source.get("pollster"),
-        "title": source.get("title"),
-        "page_url": source.get("page_url"),
-        "pdf_url": source.get("pdf_url"),
-        "published_date": source.get("published_date"),
-        "first_seen_at": first_seen_at,
-        "last_checked_at": utc_now_iso(),
-        "sha256": content_hash,
-        "processing_status": status,
-    }
-
-    if processing_error:
-        record["processing_error"] = processing_error
-
-    return record
-
-
-def build_public_record(
-    source: Dict[str, Any],
-    parse_result: Any,
-) -> Dict[str, Any]:
-    """Convert an AUTO_ACCEPTED parse result into a public poll record."""
-    figures = {}
-
-    for candidate in TRACKED_CANDIDATES:
-        value = parse_result.figures.get(candidate)
-        figures[candidate] = value if value is not None else None
-
-    return {
-        "date": parse_result.poll_date,
-        "fieldwork_dates": parse_result.fieldwork_dates,
-        "pollster": source.get("pollster"),
-        "poll_type": parse_result.poll_type,
-        "question_text": parse_result.question_text,
-        "geography": "Kenya",
-        "sample_size": parse_result.sample_size,
-        "figures": figures,
-        "source_title": source.get("title"),
-        "source_url": source.get("pdf_url") or source.get("page_url"),
-        "extraction_status": parse_result.status,
-        "extraction_confidence": parse_result.confidence,
-        "notes": parse_result.reason,
-    }
-
-
-def build_review_item(
-    source: Dict[str, Any],
-    parse_result: Any,
-    reason_override: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Convert a NEEDS_REVIEW or processing failure into a review queue item."""
-    source_url = source.get("pdf_url") or source.get("page_url")
-    source_id = stable_id(source_url or source.get("title") or "")
-
-    extracted_candidates = {}
-
-    if hasattr(parse_result, "figures"):
-        extracted_candidates = {
-            name: value
-            for name, value in parse_result.figures.items()
-            if value is not None
-        }
-
-    return {
-        "source_id": source_id,
-        "pollster": source.get("pollster"),
-        "title": source.get("title"),
-        "source_url": source_url,
-        "reason": reason_override or getattr(parse_result, "reason", "Needs review"),
-        "extracted_candidates": extracted_candidates,
-        "raw_snippet": getattr(parse_result, "raw_snippet", ""),
-        "created_at": utc_now_iso(),
-    }
-
-
-def dedupe_poll_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def find_candidate_percentages(
+    text: str,
+    window_chars: int = 170,
+) -> Tuple[Dict[str, Optional[float]], str, float]:
     """
-    Deduplicate poll records.
+    Locate candidate aliases and nearby percentage values.
 
-    If a duplicate exists, keep the higher-confidence record.
+    This generic parser looks around each candidate alias occurrence. It works
+    for ordinary paragraphs and tables where the value is near the name, but it
+    can fail on grouped charts where all percentages appear before labels.
     """
-    by_key: Dict[str, Dict[str, Any]] = {}
+    normalized = normalize_text(text)
 
-    for record in records:
-        key = "|".join(
-            [
-                str(record.get("source_url")),
-                str(record.get("pollster")),
-                str(record.get("poll_type")),
-                str(record.get("date")),
-            ]
-        )
+    figures: Dict[str, Optional[float]] = {
+        candidate: None for candidate in TRACKED_CANDIDATES
+    }
 
-        current = by_key.get(key)
+    snippets: List[str] = []
+    evidence_count = 0
 
-        if current is None:
-            by_key[key] = record
-            continue
+    for canonical, aliases in CANDIDATE_ALIASES.items():
+        best_value: Optional[float] = None
+        best_distance: Optional[int] = None
+        best_snippet = ""
 
-        if float(record.get("extraction_confidence") or 0) > float(
-            current.get("extraction_confidence") or 0
-        ):
-            by_key[key] = record
+        for alias in aliases:
+            pattern = re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE)
 
-    return sorted(
-        by_key.values(),
-        key=lambda item: item.get("date") or "",
+            for match in pattern.finditer(normalized):
+                start = max(0, match.start() - window_chars)
+                end = min(len(normalized), match.end() + window_chars)
+                window = normalized[start:end]
+
+                for percent_match in PERCENT_RE.finditer(window):
+                    value = float(percent_match.group("value"))
+
+                    if not 0 <= value <= 100:
+                        continue
+
+                    alias_mid = match.start() - start + len(alias) // 2
+                    pct_mid = percent_match.start() + len(percent_match.group(0)) // 2
+                    distance = abs(alias_mid - pct_mid)
+
+                    if best_distance is None or distance < best_distance:
+                        best_value = value
+                        best_distance = distance
+                        best_snippet = window.strip()
+
+        if best_value is not None:
+            figures[canonical] = best_value
+            evidence_count += 1
+            snippets.append(best_snippet[:500])
+
+    confidence = min(0.85, 0.25 + evidence_count * 0.12)
+    return figures, "\n---\n".join(snippets[:5]), confidence
+
+
+def count_positive_candidate_values(figures: Dict[str, Optional[float]]) -> int:
+    """
+    Count extracted candidate values that are real positive percentages.
+
+    This prevents bad records like all candidates = 0.0% from being
+    automatically published to polls_data.json.
+    """
+    return sum(
+        1
+        for value in figures.values()
+        if isinstance(value, (int, float)) and value > 0 and value <= 100
     )
 
 
-def dedupe_review_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate review queue items by source_id and reason."""
-    seen = set()
-    output = []
-
-    for item in items:
-        key = f"{item.get('source_id')}|{item.get('reason')}"
-
-        if key in seen:
-            continue
-
-        seen.add(key)
-        output.append(item)
-
-    return output
-
-
-def discover_all_sources() -> List[Dict[str, Any]]:
-    """Run all configured discovery modules and append seed sources."""
-    sources: List[Dict[str, Any]] = []
-
-    try:
-        sources.extend(tifa.discover_sources())
-    except Exception as exc:  # noqa: BLE001
-        print(f"TIFA discovery failed: {exc}", file=sys.stderr)
-
-    try:
-        sources.extend(infotrak.discover_sources())
-    except Exception as exc:  # noqa: BLE001
-        print(f"Infotrak discovery failed: {exc}", file=sys.stderr)
-
-    sources.extend(SEED_SOURCES)
-
-    return dedupe_sources(sources)
-
-
-def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
+def has_all_zero_or_empty_values(figures: Dict[str, Optional[float]]) -> bool:
     """
-    Download/process one source and return processing outputs.
+    Return True when no candidate has a positive extracted percentage.
 
-    Return shape:
-    {
-      "registry_status": str,
-      "content_hash": str | None,
-      "public_record": dict | None,
-      "review_item": dict | None,
-      "error": str | None
-    }
+    Examples that should not be auto-published:
+    - all values are None
+    - all values are 0
+    - a mix of None and 0
     """
-    fallback_date = source.get("published_date")
-    source_url = source.get("pdf_url") or source.get("page_url")
+    return count_positive_candidate_values(figures) == 0
 
-    if not source_url:
-        return {
-            "registry_status": "rejected",
-            "content_hash": None,
-            "public_record": None,
-            "review_item": None,
-            "error": "Source has no URL.",
-        }
 
-    try:
-        if source.get("pdf_url") or is_probably_pdf(source_url):
-            content = download_url(source_url)
-            content_hash = sha256_bytes(content)
-            parse_result = parse_pdf_bytes(content, fallback_date=fallback_date)
-        else:
-            text = fetch_page_text(source_url)
-            content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            parse_result = parse_poll_text(text, fallback_date=fallback_date)
+def find_tifa_2027_grouped_chart(
+    text: str,
+) -> Tuple[Dict[str, Optional[float]], str, float]:
+    """
+    Parse TIFA-style grouped bar chart text where percentages appear before
+    candidate labels.
 
-    except Exception as exc:  # noqa: BLE001
-        review_item = build_review_item(
-            source=source,
-            parse_result=object(),
-            reason_override=f"Processing failed: {exc}",
+    Example structure found in extracted PDF text:
+
+    32%
+    28%
+    25%
+    24%
+    24%
+    21%
+    18%
+    19%
+    ...
+    Ruto Kalonzo Matiang'i Sifuna Gachagua ...
+    May (2025) August (2025) November (2025) May (2026)
+
+    The first five candidate groups appear in this order:
+
+    - Ruto
+    - Kalonzo
+    - Matiang'i
+    - Sifuna
+    - Gachagua
+
+    Each candidate has four values:
+
+    - May 2025
+    - August 2025
+    - November 2025
+    - May 2026
+
+    The latest wave is therefore the fourth value in each candidate group.
+    """
+    normalized = normalize_text(text)
+
+    required_terms = [
+        "Ruto",
+        "Kalonzo",
+        "Matiang'i",
+        "Sifuna",
+        "Gachagua",
+        "May (2025)",
+        "August (2025)",
+        "November (2025)",
+        "May (2026)",
+    ]
+
+    lower = normalized.lower()
+
+    if not all(term.lower() in lower for term in required_terms):
+        return (
+            {candidate: None for candidate in TRACKED_CANDIDATES},
+            "",
+            0.0,
         )
 
-        return {
-            "registry_status": "needs_review_processing_error",
-            "content_hash": None,
-            "public_record": None,
-            "review_item": review_item,
-            "error": str(exc),
-        }
+    label_match = re.search(
+        r"Ruto\s+Kalonzo\s+Matiang'?i\s+Sifuna\s+Gachagua",
+        normalized,
+        re.IGNORECASE,
+    )
 
-    if parse_result.status == "AUTO_ACCEPTED":
-        return {
-            "registry_status": "processed",
-            "content_hash": content_hash,
-            "public_record": build_public_record(source, parse_result),
-            "review_item": None,
-            "error": None,
-        }
-
-    if parse_result.status == "NEEDS_REVIEW":
-        return {
-            "registry_status": "needs_review",
-            "content_hash": content_hash,
-            "public_record": None,
-            "review_item": build_review_item(source, parse_result),
-            "error": None,
-        }
-
-    return {
-        "registry_status": "rejected",
-        "content_hash": content_hash,
-        "public_record": None,
-        "review_item": None,
-        "error": parse_result.reason,
-    }
-
-
-def main() -> None:
-    """Run full polling update pipeline."""
-    ensure_data_files()
-
-    existing_polls = read_json(POLLS_DATA_PATH, [])
-    existing_review = read_json(REVIEW_QUEUE_PATH, [])
-    existing_registry = read_json(SOURCES_REGISTRY_PATH, [])
-
-    registry_by_id = registry_index(existing_registry)
-
-    discovered_sources = discover_all_sources()
-
-    new_public_records = []
-    new_review_items = []
-    updated_registry = registry_by_id.copy()
-
-    summary = {
-        "sources_discovered": len(discovered_sources),
-        "new_pdfs_or_pages_processed": 0,
-        "records_auto_accepted": 0,
-        "items_sent_to_review": 0,
-        "rejected_items": 0,
-        "polls_data_updated": "no",
-    }
-
-    for source in discovered_sources:
-        key = source_key(source)
-        source_id = stable_id(key)
-        existing_registry_record = updated_registry.get(source_id)
-
-        result = process_source(source)
-
-        summary["new_pdfs_or_pages_processed"] += 1
-
-        updated_registry[source_id] = build_registry_record(
-            source=source,
-            status=result["registry_status"],
-            content_hash=result["content_hash"],
-            existing=existing_registry_record,
-            processing_error=result["error"]
-            if result["registry_status"] == "needs_review_processing_error"
-            else None,
+    if not label_match:
+        return (
+            {candidate: None for candidate in TRACKED_CANDIDATES},
+            "",
+            0.0,
         )
 
-        if result["public_record"]:
-            new_public_records.append(result["public_record"])
-            summary["records_auto_accepted"] += 1
+    # Look backwards before the candidate-label row where chart percentages appear.
+    chart_start = max(0, label_match.start() - 1200)
+    chart_text = normalized[chart_start:label_match.start()]
 
-        elif result["review_item"]:
-            new_review_items.append(result["review_item"])
-            summary["items_sent_to_review"] += 1
+    values: List[float] = []
 
-        else:
-            summary["rejected_items"] += 1
+    for match in PERCENT_RE.finditer(chart_text):
+        value = float(match.group("value"))
+        if 0 <= value <= 100:
+            values.append(value)
 
-    merged_polls = dedupe_poll_records(existing_polls + new_public_records)
-    merged_review = dedupe_review_items(existing_review + new_review_items)
+    # Need at least 5 candidates x 4 waves = 20 values.
+    if len(values) < 20:
+        return (
+            {candidate: None for candidate in TRACKED_CANDIDATES},
+            chart_text[-700:],
+            0.0,
+        )
 
-    registry_list = sorted(
-        updated_registry.values(),
-        key=lambda item: (
-            item.get("pollster") or "",
-            item.get("title") or "",
-            item.get("page_url") or "",
-            item.get("pdf_url") or "",
+    candidate_order = [
+        "William Ruto",
+        "Kalonzo Musyoka",
+        "Fred Matiang'i",
+        "Edwin Sifuna",
+        "Rigathi Gachagua",
+    ]
+
+    figures: Dict[str, Optional[float]] = {
+        candidate: None for candidate in TRACKED_CANDIDATES
+    }
+
+    for index, candidate in enumerate(candidate_order):
+        group_start = index * 4
+        group = values[group_start: group_start + 4]
+
+        if len(group) == 4:
+            # Fourth value is May 2026, the latest wave.
+            figures[candidate] = group[3]
+
+    snippet_start = max(0, label_match.start() - 900)
+    snippet_end = min(len(normalized), label_match.end() + 300)
+    snippet = normalized[snippet_start:snippet_end]
+
+    positive_count = count_positive_candidate_values(figures)
+    confidence = 0.9 if positive_count >= 5 else 0.0
+
+    return figures, snippet, confidence
+
+
+def extract_dates(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """Extract a plausible poll/publication date and fieldwork date phrase."""
+    normalized = normalize_text(text)
+
+    found = search_dates(
+        normalized[:6000],
+        settings={
+            "PREFER_DATES_FROM": "past",
+            "RETURN_AS_TIMEZONE_AWARE": False,
+            "DATE_ORDER": "DMY",
+        },
+    )
+
+    poll_date = None
+
+    if found:
+        valid_dates = [
+            dt
+            for _, dt in found
+            if 2000 <= dt.year <= datetime.utcnow().year + 1
+        ]
+
+        if valid_dates:
+            poll_date = valid_dates[0].date().isoformat()
+
+    fieldwork_dates = None
+    fieldwork_match = FIELDWORK_RE.search(normalized)
+
+    if fieldwork_match:
+        fieldwork_dates = re.sub(
+            r"\s+",
+            " ",
+            fieldwork_match.group("dates"),
+        ).strip(" .;:-")[:140]
+
+    return poll_date, fieldwork_dates
+
+
+def extract_sample_size(text: str) -> Optional[int]:
+    """Extract a sample-size value when it appears in common report language."""
+    match = SAMPLE_SIZE_RE.search(normalize_text(text))
+
+    if not match:
+        return None
+
+    try:
+        sample_size = int(match.group("n"))
+    except ValueError:
+        return None
+
+    if 100 <= sample_size <= 200000:
+        return sample_size
+
+    return None
+
+
+def extract_question_text(text: str) -> Optional[str]:
+    """Extract a likely question phrase if the report labels it explicitly."""
+    match = QUESTION_RE.search(normalize_text(text))
+
+    if not match:
+        return None
+
+    question = re.sub(r"\s+", " ", match.group("question")).strip()
+    return question[:300]
+
+
+def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResult:
+    """Parse normalized poll data from extracted PDF or webpage text."""
+    normalized = normalize_text(text)
+
+    if not normalized:
+        return ParseResult(
+            status="REJECTED",
+            figures={candidate: None for candidate in TRACKED_CANDIDATES},
+            poll_type="unknown",
+            poll_date=fallback_date,
+            fieldwork_dates=None,
+            sample_size=None,
+            question_text=None,
+            confidence=0.0,
+            raw_snippet="",
+            reason="No extractable text found.",
+        )
+
+    # First try the TIFA grouped-chart parser.
+    figures, snippet, figure_confidence = find_tifa_2027_grouped_chart(normalized)
+
+    # If that special parser does not apply, fall back to generic nearby-value parsing.
+    if figure_confidence == 0.0:
+        figures, snippet, figure_confidence = find_candidate_percentages(normalized)
+
+    poll_type, type_confidence = classify_poll_type(normalized)
+    poll_date, fieldwork_dates = extract_dates(normalized)
+    poll_date = poll_date or fallback_date
+    sample_size = extract_sample_size(normalized)
+    question_text = extract_question_text(normalized)
+
+    positive_count = count_positive_candidate_values(figures)
+
+    has_any_extracted_value = any(
+        isinstance(value, (int, float))
+        for value in figures.values()
+    )
+
+    confidence = round(
+        min(
+            0.98,
+            figure_confidence
+            + type_confidence * 0.25
+            + (0.08 if poll_date else 0),
         ),
+        2,
     )
 
-    if merged_polls != existing_polls:
-        summary["polls_data_updated"] = "yes"
+    if positive_count >= 2 and poll_type != "unknown" and poll_date:
+        status = "AUTO_ACCEPTED"
+        reason = "Candidate percentages, poll type, and date were identified."
 
-    write_json(POLLS_DATA_PATH, merged_polls)
-    write_json(REVIEW_QUEUE_PATH, merged_review)
-    write_json(SOURCES_REGISTRY_PATH, registry_list)
+    elif has_all_zero_or_empty_values(figures) and has_any_extracted_value:
+        status = "NEEDS_REVIEW"
+        reason = (
+            "Candidate percentage values were extracted, but all extracted values "
+            "are zero. This is likely a parsing error and must be reviewed before "
+            "publication."
+        )
 
-    print(f"Sources discovered: {summary['sources_discovered']}")
-    print(f"New PDFs/pages processed: {summary['new_pdfs_or_pages_processed']}")
-    print(f"Records auto-accepted: {summary['records_auto_accepted']}")
-    print(f"Items sent to review: {summary['items_sent_to_review']}")
-    print(f"Rejected items: {summary['rejected_items']}")
-    print(f"polls_data.json updated: {summary['polls_data_updated']}")
+    elif positive_count > 0:
+        status = "NEEDS_REVIEW"
+        missing = []
+
+        if poll_type == "unknown":
+            missing.append("poll type")
+
+        if not poll_date:
+            missing.append("poll date")
+
+        if positive_count < 2:
+            missing.append("at least two positive tracked candidate values")
+
+        reason = "Candidate values found but review is needed for: " + ", ".join(missing)
+
+    else:
+        status = "REJECTED"
+        reason = "No positive tracked candidate percentages were found."
+
+    return ParseResult(
+        status=status,
+        figures=figures,
+        poll_type=poll_type,
+        poll_date=poll_date,
+        fieldwork_dates=fieldwork_dates,
+        sample_size=sample_size,
+        question_text=question_text,
+        confidence=confidence,
+        raw_snippet=snippet or normalized[:700],
+        reason=reason,
+    )
 
 
-if __name__ == "__main__":
-    main()
+def parse_pdf_bytes(
+    pdf_bytes: bytes,
+    fallback_date: Optional[str] = None,
+) -> ParseResult:
+    """Extract and parse poll data from PDF bytes."""
+    try:
+        text = extract_text_from_pdf_bytes(pdf_bytes)
+    except Exception as exc:  # noqa: BLE001
+        return ParseResult(
+            status="REJECTED",
+            figures={candidate: None for candidate in TRACKED_CANDIDATES},
+            poll_type="unknown",
+            poll_date=fallback_date,
+            fieldwork_dates=None,
+            sample_size=None,
+            question_text=None,
+            confidence=0.0,
+            raw_snippet="",
+            reason=f"PDF extraction failed: {exc}",
+        )
+
+    return parse_poll_text(text, fallback_date=fallback_date)
