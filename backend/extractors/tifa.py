@@ -2,12 +2,13 @@
 TIFA Research source discovery.
 
 This extractor monitors the official TIFA polls page and returns only plausible
-official article/PDF sources. It intentionally filters out social-share links,
-mailto links, category/navigation pages, pagination, and Elementor popup links.
+official article/PDF sources.
+
+It intentionally filters out social-share links, mailto links, generic poll
+archive pages, navigation pages, pagination, and Elementor popup links.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
@@ -28,22 +29,21 @@ HEADERS = {
     )
 }
 
+# Stronger relevance keywords.
+# These avoid broad issue/economy polls while keeping presidential/election sources.
 RELEVANT_KEYWORDS = [
     "presidential",
     "president",
     "2027",
-    "election",
-    "elections",
     "candidate",
     "candidates",
-    "popularity",
-    "political",
-    "alignment",
-    "alignments",
-    "poll",
-    "survey",
-    "opinion",
-    "race",
+    "presidential-race",
+    "presidential-contest",
+    "election-prospects",
+    "political-alignments",
+    "political alignments",
+    "presidential candidates",
+    "presidential candidates popularity",
 ]
 
 BAD_URL_PATTERNS = [
@@ -84,9 +84,13 @@ GENERIC_TITLES = {
     "mastodon",
     "share",
     "read more",
+    "read more...",
     "learn more",
     "home",
+    "polls",
     "our services",
+    "latest news",
+    "news",
 }
 
 
@@ -99,10 +103,6 @@ class DiscoveredSource:
     published_date: Optional[str]
 
 
-def _stable_id(value: str) -> str:
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()[:20]
-
-
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
@@ -112,7 +112,6 @@ def _is_bad_url(url: str) -> bool:
         return True
 
     decoded = unquote(url).lower()
-
     return any(pattern in decoded for pattern in BAD_URL_PATTERNS)
 
 
@@ -174,7 +173,13 @@ def _extract_pdf_links_from_page(page_url: str) -> List[str]:
         if not url:
             continue
 
-        if _is_pdf_url(url) and url not in pdf_links:
+        if not _is_pdf_url(url):
+            continue
+
+        if not _looks_relevant(anchor.get_text(" ", strip=True), url):
+            continue
+
+        if url not in pdf_links:
             pdf_links.append(url)
 
     return pdf_links
@@ -212,7 +217,7 @@ def discover_sources() -> List[Dict]:
         if not title:
             title = "TIFA Research poll release"
 
-        if not _is_pdf_url(url) and not _looks_relevant(title, url):
+        if not _looks_relevant(title, url):
             continue
 
         pdf_url = url if _is_pdf_url(url) else None
@@ -222,8 +227,7 @@ def discover_sources() -> List[Dict]:
 
         if pdf_links:
             for pdf in pdf_links:
-                key = pdf
-                discovered[key] = DiscoveredSource(
+                discovered[pdf] = DiscoveredSource(
                     pollster="TIFA Research",
                     title=title,
                     page_url=page_url,
@@ -231,8 +235,7 @@ def discover_sources() -> List[Dict]:
                     published_date=None,
                 )
         else:
-            key = page_url
-            discovered[key] = DiscoveredSource(
+            discovered[page_url] = DiscoveredSource(
                 pollster="TIFA Research",
                 title=title,
                 page_url=page_url,
