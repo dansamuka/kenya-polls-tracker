@@ -5,18 +5,17 @@ The parser is intentionally conservative. It extracts candidate percentage data
 from official reports, but only returns AUTO_ACCEPTED when minimum confidence
 thresholds are met. Ambiguous items are routed to review_queue.json.
 
-This version fixes a key issue in chart extraction: PDF text often contains
-percentages as "32%\n28%" or "5%5%". A trailing word-boundary after "%" caused
-those values to be missed, producing false 0.0% outputs. The percentage regex
-now handles newline-separated and glued percentages correctly.
+This version supports TIFA-style grouped bar charts and exposes all extracted
+poll waves from June 2025 onward so the frontend can show a historical trend,
+not only the latest point.
 """
 from __future__ import annotations
 
 import io
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pdfplumber
 
@@ -34,8 +33,8 @@ TRACKED_CANDIDATES: List[str] = [
 ]
 
 CANDIDATE_ALIASES: Dict[str, List[str]] = {
-    "William Ruto": ["William Ruto", "Ruto", "President Ruto"],
-    "Kalonzo Musyoka": ["Kalonzo Musyoka", "Kalonzo"],
+    "William Ruto": ["William Ruto", "Ruto", "President Ruto", "Dr William Ruto", "H.E William Ruto"],
+    "Kalonzo Musyoka": ["Kalonzo Musyoka", "Kalonzo", "Stephen Kalonzo", "Stephen Kalonzo Musyoka"],
     "Fred Matiang'i": [
         "Fred Matiang'i",
         "Fred Matiang’i",
@@ -44,8 +43,8 @@ CANDIDATE_ALIASES: Dict[str, List[str]] = {
         "Dr Fred Matiang'i",
         "Dr Fred Matiang’i",
     ],
-    "Rigathi Gachagua": ["Rigathi Gachagua", "Gachagua"],
-    "Edwin Sifuna": ["Edwin Sifuna", "Sifuna"],
+    "Rigathi Gachagua": ["Rigathi Gachagua", "Gachagua", "Riggy G"],
+    "Edwin Sifuna": ["Edwin Sifuna", "Sifuna", "Senator Edwin Sifuna"],
 }
 
 POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
@@ -54,6 +53,12 @@ POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
         [
             "preferred presidential candidate",
             "presidential candidate preference",
+            "if presidential elections were held today",
+            "if presidential election were held today",
+            "who would you vote for as president",
+            "vote for as president",
+            "vote for president",
+            "next president of kenya",
         ],
     ),
     (
@@ -69,6 +74,8 @@ POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
             "election prospects",
             "opposition landscape",
             "fragmented opposition landscape",
+            "assuming a presidential election were held today",
+            "assuming presidential elections were held today",
         ],
     ),
     (
@@ -83,12 +90,13 @@ POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
             "most popular",
             "candidate popularity",
             "presidential candidates popularity",
+            "leader popularity",
+            "leaders popularity",
+            "popularity rating",
+            "popular leaders",
         ],
     ),
-    (
-        "party_support",
-        ["party support", "political party", "party popularity"],
-    ),
+    ("party_support", ["party support", "political party", "party popularity"]),
 ]
 
 # IMPORTANT: do not put a final \b after "%". PDF text can contain values such
@@ -115,6 +123,8 @@ QUESTION_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+MIN_TREND_DATE = "2025-06-01"
+
 
 @dataclass
 class ParseResult:
@@ -128,6 +138,9 @@ class ParseResult:
     confidence: float
     raw_snippet: str
     reason: str
+    # Optional list of fully normalized public-record fragments for charts.
+    # Used by grouped chart parsers to emit multiple time points from one PDF.
+    series_records: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
@@ -235,17 +248,55 @@ def has_all_zero_or_empty_values(figures: Dict[str, Optional[float]]) -> bool:
     return count_positive_candidate_values(figures) == 0
 
 
-def _first_poll_date_from_fallback_or_text(text: str, fallback_date: Optional[str]) -> Optional[str]:
-    """Resolve the public record date, preferring a trusted source fallback date."""
-    return fallback_date or extract_dates(text)[0]
+def _figures_from_ordered_values(values: List[float], wave_index: int) -> Dict[str, Optional[float]]:
+    """Map flattened grouped-chart values to tracked candidates for a given wave."""
+    candidate_order = [
+        "William Ruto",
+        "Kalonzo Musyoka",
+        "Fred Matiang'i",
+        "Edwin Sifuna",
+        "Rigathi Gachagua",
+    ]
+    figures: Dict[str, Optional[float]] = {candidate: None for candidate in TRACKED_CANDIDATES}
+    for index, candidate in enumerate(candidate_order):
+        group_start = index * 4
+        group = values[group_start : group_start + 4]
+        if len(group) == 4:
+            figures[candidate] = group[wave_index]
+    return figures
 
+
+
+
+def _can_auto_accept_single_candidate(poll_type: str, positive_count: int) -> bool:
+    """
+    Allow single-candidate records only for candidate/popularity poll types.
+
+    This lets Infotrak reports that contain one tracked candidate value enter the
+    dataset without weakening the all-zero safeguards. It does not mix approval
+    ratings into the presidential-aspirant trend because the dashboard filters
+    by poll_type.
+    """
+    return positive_count >= 1 and poll_type in {
+        "preferred_presidential_candidate",
+        "preferred_presidential_aspirant",
+        "popularity_rating",
+    }
+
+
+def _is_from_min_trend_date(date_value: Optional[str]) -> bool:
+    """Return True if date is missing or on/after the configured trend start."""
+    if not date_value:
+        return True
+    return date_value >= MIN_TREND_DATE
 
 def find_tifa_2027_grouped_chart(
     text: str,
-) -> Tuple[Dict[str, Optional[float]], str, float]:
+    fallback_date: Optional[str] = None,
+) -> Tuple[Dict[str, Optional[float]], str, float, List[Dict[str, Any]]]:
     """
-    Parse TIFA-style grouped bar chart text where percentages appear before
-    candidate labels.
+    Parse TIFA-style grouped bar chart text and return all trend waves from
+    June 2025 onward.
 
     In the May 2026 TIFA report, pdfplumber extracts the chart roughly as:
 
@@ -254,8 +305,11 @@ def find_tifa_2027_grouped_chart(
     May (2025) August (2025) November (2025) May (2026)
 
     The chart has 10 categories and 4 waves. Percent values are flattened in
-    category order. We take the fourth value for the five tracked candidates,
-    representing May 2026.
+    category order. The first five category groups are the tracked candidates.
+
+    For the dashboard trend, we exclude May 2025 because the user requested data
+    from June 2025 onward. Therefore the emitted series contains August 2025,
+    November 2025, and May 2026.
     """
     normalized = normalize_text(text)
     lower = normalized.lower()
@@ -273,7 +327,8 @@ def find_tifa_2027_grouped_chart(
     ]
 
     if not all(term in lower for term in required_terms):
-        return ({candidate: None for candidate in TRACKED_CANDIDATES}, "", 0.0)
+        empty = {candidate: None for candidate in TRACKED_CANDIDATES}
+        return empty, "", 0.0, []
 
     label_match = re.search(
         r"Ruto\s+Kalonzo\s+Matiang'?i\s+Sifuna\s+Gachagua",
@@ -281,7 +336,8 @@ def find_tifa_2027_grouped_chart(
         re.IGNORECASE,
     )
     if not label_match:
-        return ({candidate: None for candidate in TRACKED_CANDIDATES}, "", 0.0)
+        empty = {candidate: None for candidate in TRACKED_CANDIDATES}
+        return empty, "", 0.0, []
 
     chart_start = max(0, label_match.start() - 1600)
     chart_text = normalized[chart_start:label_match.start()]
@@ -295,30 +351,39 @@ def find_tifa_2027_grouped_chart(
     # Need at least 5 tracked candidates x 4 waves = 20 values. The full chart
     # normally has 40 values, but 20 is enough to parse the five tracked figures.
     if len(values) < 20:
-        return ({candidate: None for candidate in TRACKED_CANDIDATES}, chart_text[-900:], 0.0)
+        empty = {candidate: None for candidate in TRACKED_CANDIDATES}
+        return empty, chart_text[-900:], 0.0, []
 
-    candidate_order = [
-        "William Ruto",
-        "Kalonzo Musyoka",
-        "Fred Matiang'i",
-        "Edwin Sifuna",
-        "Rigathi Gachagua",
+    # Wave index 0 is May 2025. Exclude it because the requested tracker window
+    # begins from June 2025.
+    waves = [
+        ("2025-08-01", "August 2025", 1),
+        ("2025-11-01", "November 2025", 2),
+        (fallback_date or "2026-05-14", "May 2026", 3),
     ]
 
-    figures: Dict[str, Optional[float]] = {candidate: None for candidate in TRACKED_CANDIDATES}
-    for index, candidate in enumerate(candidate_order):
-        group_start = index * 4
-        group = values[group_start : group_start + 4]
-        if len(group) == 4:
-            figures[candidate] = group[3]
+    series_records: List[Dict[str, Any]] = []
+    for wave_date, wave_label, wave_index in waves:
+        figures = _figures_from_ordered_values(values, wave_index)
+        if count_positive_candidate_values(figures) >= 5:
+            series_records.append(
+                {
+                    "date": wave_date,
+                    "fieldwork_dates": wave_label,
+                    "figures": figures,
+                    "notes": f"Extracted from TIFA grouped chart wave: {wave_label}",
+                }
+            )
+
+    latest_figures = series_records[-1]["figures"] if series_records else {candidate: None for candidate in TRACKED_CANDIDATES}
 
     snippet_start = max(0, label_match.start() - 900)
     snippet_end = min(len(normalized), label_match.end() + 350)
     snippet = normalized[snippet_start:snippet_end]
 
-    positive_count = count_positive_candidate_values(figures)
-    confidence = 0.94 if positive_count >= 5 else 0.0
-    return figures, snippet, confidence
+    positive_count = count_positive_candidate_values(latest_figures)
+    confidence = 0.94 if positive_count >= 5 and len(series_records) >= 3 else 0.0
+    return latest_figures, snippet, confidence, series_records
 
 
 def _fallback_search_dates(text: str) -> Optional[List[Tuple[str, datetime]]]:
@@ -420,9 +485,13 @@ def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResu
             reason="No extractable text found.",
         )
 
-    figures, snippet, figure_confidence = find_tifa_2027_grouped_chart(normalized)
+    figures, snippet, figure_confidence, series_records = find_tifa_2027_grouped_chart(
+        normalized,
+        fallback_date=fallback_date,
+    )
     if figure_confidence == 0.0:
         figures, snippet, figure_confidence = find_candidate_percentages(normalized)
+        series_records = []
 
     poll_type, type_confidence = classify_poll_type(normalized)
     extracted_date, fieldwork_dates = extract_dates(normalized)
@@ -438,7 +507,12 @@ def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResu
         2,
     )
 
-    if positive_count >= 2 and poll_type != "unknown" and poll_date:
+    if (
+        poll_type != "unknown"
+        and poll_date
+        and _is_from_min_trend_date(poll_date)
+        and (positive_count >= 2 or _can_auto_accept_single_candidate(poll_type, positive_count))
+    ):
         status = "AUTO_ACCEPTED"
         reason = "Candidate percentages, poll type, and date were identified."
     elif has_all_zero_or_empty_values(figures) and has_any_extracted_value:
@@ -461,6 +535,14 @@ def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResu
         status = "REJECTED"
         reason = "No positive tracked candidate percentages were found."
 
+    # Fill common metadata into grouped-chart series records. The poll_tracker
+    # will expand these into separate public records.
+    for record in series_records:
+        record.setdefault("poll_type", poll_type)
+        record.setdefault("question_text", question_text)
+        record.setdefault("sample_size", sample_size)
+        record.setdefault("confidence", confidence)
+
     return ParseResult(
         status=status,
         figures=figures,
@@ -472,6 +554,7 @@ def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResu
         confidence=confidence,
         raw_snippet=snippet or normalized[:700],
         reason=reason,
+        series_records=series_records,
     )
 
 
