@@ -1,13 +1,14 @@
 """
 PDF and text parsing utilities for the Kenya Presidential Opinion Polls Tracker.
 
-The parser is intentionally conservative. It attempts to extract candidate-name /
-percentage pairs from official poll reports, but only returns AUTO_ACCEPTED when
-minimum confidence thresholds are met. Ambiguous items should be routed to the
-review queue rather than published.
+The parser is intentionally conservative. It extracts candidate percentage data
+from official reports, but only returns AUTO_ACCEPTED when minimum confidence
+thresholds are met. Ambiguous items are routed to review_queue.json.
 
-Special handling is included for TIFA-style grouped bar charts where percentages
-appear before candidate labels in extracted PDF text.
+This version fixes a key issue in chart extraction: PDF text often contains
+percentages as "32%\n28%" or "5%5%". A trailing word-boundary after "%" caused
+those values to be missed, producing false 0.0% outputs. The percentage regex
+now handles newline-separated and glued percentages correctly.
 """
 from __future__ import annotations
 
@@ -18,8 +19,11 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import pdfplumber
-from dateparser.search import search_dates
 
+try:  # dateparser is installed in GitHub Actions from requirements.txt.
+    from dateparser.search import search_dates as _dateparser_search_dates
+except Exception:  # pragma: no cover - fallback for local/offline audits.
+    _dateparser_search_dates = None
 
 TRACKED_CANDIDATES: List[str] = [
     "William Ruto",
@@ -29,17 +33,9 @@ TRACKED_CANDIDATES: List[str] = [
     "Edwin Sifuna",
 ]
 
-
 CANDIDATE_ALIASES: Dict[str, List[str]] = {
-    "William Ruto": [
-        "William Ruto",
-        "Ruto",
-        "President Ruto",
-    ],
-    "Kalonzo Musyoka": [
-        "Kalonzo Musyoka",
-        "Kalonzo",
-    ],
+    "William Ruto": ["William Ruto", "Ruto", "President Ruto"],
+    "Kalonzo Musyoka": ["Kalonzo Musyoka", "Kalonzo"],
     "Fred Matiang'i": [
         "Fred Matiang'i",
         "Fred Matiang’i",
@@ -48,16 +44,9 @@ CANDIDATE_ALIASES: Dict[str, List[str]] = {
         "Dr Fred Matiang'i",
         "Dr Fred Matiang’i",
     ],
-    "Rigathi Gachagua": [
-        "Rigathi Gachagua",
-        "Gachagua",
-    ],
-    "Edwin Sifuna": [
-        "Edwin Sifuna",
-        "Sifuna",
-    ],
+    "Rigathi Gachagua": ["Rigathi Gachagua", "Gachagua"],
+    "Edwin Sifuna": ["Edwin Sifuna", "Sifuna"],
 }
-
 
 POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
     (
@@ -78,16 +67,13 @@ POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
             "presidential contest",
             "2027 election prospects",
             "election prospects",
+            "opposition landscape",
+            "fragmented opposition landscape",
         ],
     ),
     (
         "approval_rating",
-        [
-            "approval rating",
-            "approve",
-            "disapprove",
-            "performance rating",
-        ],
+        ["approval rating", "approve", "disapprove", "performance rating"],
     ),
     (
         "popularity_rating",
@@ -101,33 +87,28 @@ POLL_TYPE_KEYWORDS: List[Tuple[str, List[str]]] = [
     ),
     (
         "party_support",
-        [
-            "party support",
-            "political party",
-            "party popularity",
-        ],
+        ["party support", "political party", "party popularity"],
     ),
 ]
 
-
+# IMPORTANT: do not put a final \b after "%". PDF text can contain values such
+# as "32%\n28%" or "5%5%". A final boundary prevents normal newline-separated
+# percentages from matching because "%" and newline are both non-word chars.
 PERCENT_RE = re.compile(
-    r"(?P<value>\d{1,2}(?:\.\d+)?|100(?:\.0+)?)\s*(?:%|percent|per\s*cent)\b",
+    r"(?P<value>\d{1,2}(?:\.\d+)?|100(?:\.0+)?)\s*(?:%|percent\b|per\s*cent\b)",
     re.IGNORECASE,
 )
-
 
 SAMPLE_SIZE_RE = re.compile(
     r"(?:sample size|sample|n)\s*[:=]?\s*(?:of\s*)?(?P<n>\d{3,6})",
     re.IGNORECASE,
 )
 
-
 FIELDWORK_RE = re.compile(
     r"(?:fieldwork|data collection|interviews conducted|conducted)\s*"
     r"(?:was\s*)?(?:between|from)?\s*(?P<dates>.{0,100})",
     re.IGNORECASE,
 )
-
 
 QUESTION_RE = re.compile(
     r"(?:question|asked)\s*[:\-]\s*(?P<question>.{20,250}?)(?:\n|$)",
@@ -196,16 +177,11 @@ def find_candidate_percentages(
     """
     Locate candidate aliases and nearby percentage values.
 
-    This generic parser looks around each candidate alias occurrence. It works
-    for ordinary paragraphs and tables where the value is near the name, but it
-    can fail on grouped charts where all percentages appear before labels.
+    This generic parser is the fallback for normal tables and paragraphs. It is
+    deliberately conservative and should not override a successful chart parser.
     """
     normalized = normalize_text(text)
-
-    figures: Dict[str, Optional[float]] = {
-        candidate: None for candidate in TRACKED_CANDIDATES
-    }
-
+    figures: Dict[str, Optional[float]] = {candidate: None for candidate in TRACKED_CANDIDATES}
     snippets: List[str] = []
     evidence_count = 0
 
@@ -224,7 +200,6 @@ def find_candidate_percentages(
 
                 for percent_match in PERCENT_RE.finditer(window):
                     value = float(percent_match.group("value"))
-
                     if not 0 <= value <= 100:
                         continue
 
@@ -247,12 +222,7 @@ def find_candidate_percentages(
 
 
 def count_positive_candidate_values(figures: Dict[str, Optional[float]]) -> int:
-    """
-    Count extracted candidate values that are real positive percentages.
-
-    This prevents bad records like all candidates = 0.0% from being
-    automatically published to polls_data.json.
-    """
+    """Count candidate values that are real positive percentages."""
     return sum(
         1
         for value in figures.values()
@@ -261,15 +231,13 @@ def count_positive_candidate_values(figures: Dict[str, Optional[float]]) -> int:
 
 
 def has_all_zero_or_empty_values(figures: Dict[str, Optional[float]]) -> bool:
-    """
-    Return True when no candidate has a positive extracted percentage.
-
-    Examples that should not be auto-published:
-    - all values are None
-    - all values are 0
-    - a mix of None and 0
-    """
+    """Return True when no candidate has a positive extracted percentage."""
     return count_positive_candidate_values(figures) == 0
+
+
+def _first_poll_date_from_fallback_or_text(text: str, fallback_date: Optional[str]) -> Optional[str]:
+    """Resolve the public record date, preferring a trusted source fallback date."""
+    return fallback_date or extract_dates(text)[0]
 
 
 def find_tifa_2027_grouped_chart(
@@ -279,91 +247,55 @@ def find_tifa_2027_grouped_chart(
     Parse TIFA-style grouped bar chart text where percentages appear before
     candidate labels.
 
-    Example structure found in extracted PDF text:
+    In the May 2026 TIFA report, pdfplumber extracts the chart roughly as:
 
-    32%
-    28%
-    25%
-    24%
-    24%
-    21%
-    18%
-    19%
-    ...
-    Ruto Kalonzo Matiang'i Sifuna Gachagua ...
+    32% 28% 25% 24% 24% 21% ... 0%0%0% 0%0%
+    Ruto Kalonzo Matiang'i Sifuna Gachagua Babu The Late Raila Other Undecided NR
     May (2025) August (2025) November (2025) May (2026)
 
-    The first five candidate groups appear in this order:
-
-    - Ruto
-    - Kalonzo
-    - Matiang'i
-    - Sifuna
-    - Gachagua
-
-    Each candidate has four values:
-
-    - May 2025
-    - August 2025
-    - November 2025
-    - May 2026
-
-    The latest wave is therefore the fourth value in each candidate group.
+    The chart has 10 categories and 4 waves. Percent values are flattened in
+    category order. We take the fourth value for the five tracked candidates,
+    representing May 2026.
     """
     normalized = normalize_text(text)
-
-    required_terms = [
-        "Ruto",
-        "Kalonzo",
-        "Matiang'i",
-        "Sifuna",
-        "Gachagua",
-        "May (2025)",
-        "August (2025)",
-        "November (2025)",
-        "May (2026)",
-    ]
-
     lower = normalized.lower()
 
-    if not all(term.lower() in lower for term in required_terms):
-        return (
-            {candidate: None for candidate in TRACKED_CANDIDATES},
-            "",
-            0.0,
-        )
+    required_terms = [
+        "ruto",
+        "kalonzo",
+        "matiang'i",
+        "sifuna",
+        "gachagua",
+        "may (2025)",
+        "august (2025)",
+        "november (2025)",
+        "may (2026)",
+    ]
+
+    if not all(term in lower for term in required_terms):
+        return ({candidate: None for candidate in TRACKED_CANDIDATES}, "", 0.0)
 
     label_match = re.search(
         r"Ruto\s+Kalonzo\s+Matiang'?i\s+Sifuna\s+Gachagua",
         normalized,
         re.IGNORECASE,
     )
-
     if not label_match:
-        return (
-            {candidate: None for candidate in TRACKED_CANDIDATES},
-            "",
-            0.0,
-        )
+        return ({candidate: None for candidate in TRACKED_CANDIDATES}, "", 0.0)
 
-    # Look backwards before the candidate-label row where chart percentages appear.
-    chart_start = max(0, label_match.start() - 1200)
+    chart_start = max(0, label_match.start() - 1600)
     chart_text = normalized[chart_start:label_match.start()]
 
     values: List[float] = []
-
     for match in PERCENT_RE.finditer(chart_text):
         value = float(match.group("value"))
         if 0 <= value <= 100:
             values.append(value)
 
-    # Need at least 5 candidates x 4 waves = 20 values.
+    # Need at least 5 tracked candidates x 4 waves = 20 values. The full chart
+    # normally has 40 values, but 20 is enough to parse the five tracked figures.
     if len(values) < 20:
-        return (
-            {candidate: None for candidate in TRACKED_CANDIDATES},
-            chart_text[-700:],
-            0.0,
-        )
+        return ({candidate: None for candidate in TRACKED_CANDIDATES}, chart_text[-900:], 0.0)
 
     candidate_order = [
         "William Ruto",
@@ -373,62 +305,79 @@ def find_tifa_2027_grouped_chart(
         "Rigathi Gachagua",
     ]
 
-    figures: Dict[str, Optional[float]] = {
-        candidate: None for candidate in TRACKED_CANDIDATES
-    }
-
+    figures: Dict[str, Optional[float]] = {candidate: None for candidate in TRACKED_CANDIDATES}
     for index, candidate in enumerate(candidate_order):
         group_start = index * 4
-        group = values[group_start: group_start + 4]
-
+        group = values[group_start : group_start + 4]
         if len(group) == 4:
-            # Fourth value is May 2026, the latest wave.
             figures[candidate] = group[3]
 
     snippet_start = max(0, label_match.start() - 900)
-    snippet_end = min(len(normalized), label_match.end() + 300)
+    snippet_end = min(len(normalized), label_match.end() + 350)
     snippet = normalized[snippet_start:snippet_end]
 
     positive_count = count_positive_candidate_values(figures)
-    confidence = 0.9 if positive_count >= 5 else 0.0
-
+    confidence = 0.94 if positive_count >= 5 else 0.0
     return figures, snippet, confidence
+
+
+def _fallback_search_dates(text: str) -> Optional[List[Tuple[str, datetime]]]:
+    """Very small fallback if dateparser is not available in a local audit."""
+    month_re = (
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+    )
+    matches: List[Tuple[str, datetime]] = []
+    for match in re.finditer(rf"(?:(\d{{1,2}})\s+)?{month_re}\s+(20\d{{2}})", text, re.IGNORECASE):
+        day = int(match.group(1) or 1)
+        month_name = match.group(2).lower()
+        year = int(match.group(3))
+        month = [
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+        ].index(month_name) + 1
+        try:
+            matches.append((match.group(0), datetime(year, month, day)))
+        except ValueError:
+            continue
+    return matches or None
 
 
 def extract_dates(text: str) -> Tuple[Optional[str], Optional[str]]:
     """Extract a plausible poll/publication date and fieldwork date phrase."""
     normalized = normalize_text(text)
 
-    found = search_dates(
-        normalized[:6000],
-        settings={
-            "PREFER_DATES_FROM": "past",
-            "RETURN_AS_TIMEZONE_AWARE": False,
-            "DATE_ORDER": "DMY",
-        },
-    )
+    if _dateparser_search_dates:
+        found = _dateparser_search_dates(
+            normalized[:6000],
+            settings={
+                "PREFER_DATES_FROM": "past",
+                "RETURN_AS_TIMEZONE_AWARE": False,
+                "DATE_ORDER": "DMY",
+            },
+        )
+    else:
+        found = _fallback_search_dates(normalized[:6000])
 
     poll_date = None
-
     if found:
-        valid_dates = [
-            dt
-            for _, dt in found
-            if 2000 <= dt.year <= datetime.utcnow().year + 1
-        ]
-
+        valid_dates = [dt for _, dt in found if 2000 <= dt.year <= datetime.utcnow().year + 1]
         if valid_dates:
             poll_date = valid_dates[0].date().isoformat()
 
     fieldwork_dates = None
     fieldwork_match = FIELDWORK_RE.search(normalized)
-
     if fieldwork_match:
-        fieldwork_dates = re.sub(
-            r"\s+",
-            " ",
-            fieldwork_match.group("dates"),
-        ).strip(" .;:-")[:140]
+        fieldwork_dates = re.sub(r"\s+", " ", fieldwork_match.group("dates")).strip(" .;:-")[:140]
 
     return poll_date, fieldwork_dates
 
@@ -436,28 +385,20 @@ def extract_dates(text: str) -> Tuple[Optional[str], Optional[str]]:
 def extract_sample_size(text: str) -> Optional[int]:
     """Extract a sample-size value when it appears in common report language."""
     match = SAMPLE_SIZE_RE.search(normalize_text(text))
-
     if not match:
         return None
-
     try:
         sample_size = int(match.group("n"))
     except ValueError:
         return None
-
-    if 100 <= sample_size <= 200000:
-        return sample_size
-
-    return None
+    return sample_size if 100 <= sample_size <= 200000 else None
 
 
 def extract_question_text(text: str) -> Optional[str]:
     """Extract a likely question phrase if the report labels it explicitly."""
     match = QUESTION_RE.search(normalize_text(text))
-
     if not match:
         return None
-
     question = re.sub(r"\s+", " ", match.group("question")).strip()
     return question[:300]
 
@@ -465,7 +406,6 @@ def extract_question_text(text: str) -> Optional[str]:
 def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResult:
     """Parse normalized poll data from extracted PDF or webpage text."""
     normalized = normalize_text(text)
-
     if not normalized:
         return ParseResult(
             status="REJECTED",
@@ -480,63 +420,43 @@ def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResu
             reason="No extractable text found.",
         )
 
-    # First try the TIFA grouped-chart parser.
     figures, snippet, figure_confidence = find_tifa_2027_grouped_chart(normalized)
-
-    # If that special parser does not apply, fall back to generic nearby-value parsing.
     if figure_confidence == 0.0:
         figures, snippet, figure_confidence = find_candidate_percentages(normalized)
 
     poll_type, type_confidence = classify_poll_type(normalized)
-    poll_date, fieldwork_dates = extract_dates(normalized)
-    poll_date = poll_date or fallback_date
+    extracted_date, fieldwork_dates = extract_dates(normalized)
+    poll_date = fallback_date or extracted_date
     sample_size = extract_sample_size(normalized)
     question_text = extract_question_text(normalized)
 
     positive_count = count_positive_candidate_values(figures)
-
-    has_any_extracted_value = any(
-        isinstance(value, (int, float))
-        for value in figures.values()
-    )
+    has_any_extracted_value = any(isinstance(value, (int, float)) for value in figures.values())
 
     confidence = round(
-        min(
-            0.98,
-            figure_confidence
-            + type_confidence * 0.25
-            + (0.08 if poll_date else 0),
-        ),
+        min(0.98, figure_confidence + type_confidence * 0.25 + (0.08 if poll_date else 0)),
         2,
     )
 
     if positive_count >= 2 and poll_type != "unknown" and poll_date:
         status = "AUTO_ACCEPTED"
         reason = "Candidate percentages, poll type, and date were identified."
-
     elif has_all_zero_or_empty_values(figures) and has_any_extracted_value:
         status = "NEEDS_REVIEW"
         reason = (
-            "Candidate percentage values were extracted, but all extracted values "
-            "are zero. This is likely a parsing error and must be reviewed before "
-            "publication."
+            "Candidate percentage values were extracted, but all extracted values are zero. "
+            "This is likely a parsing error and must be reviewed before publication."
         )
-
     elif positive_count > 0:
         status = "NEEDS_REVIEW"
         missing = []
-
         if poll_type == "unknown":
             missing.append("poll type")
-
         if not poll_date:
             missing.append("poll date")
-
         if positive_count < 2:
             missing.append("at least two positive tracked candidate values")
-
         reason = "Candidate values found but review is needed for: " + ", ".join(missing)
-
     else:
         status = "REJECTED"
         reason = "No positive tracked candidate percentages were found."
@@ -555,10 +475,7 @@ def parse_poll_text(text: str, fallback_date: Optional[str] = None) -> ParseResu
     )
 
 
-def parse_pdf_bytes(
-    pdf_bytes: bytes,
-    fallback_date: Optional[str] = None,
-) -> ParseResult:
+def parse_pdf_bytes(pdf_bytes: bytes, fallback_date: Optional[str] = None) -> ParseResult:
     """Extract and parse poll data from PDF bytes."""
     try:
         text = extract_text_from_pdf_bytes(pdf_bytes)
