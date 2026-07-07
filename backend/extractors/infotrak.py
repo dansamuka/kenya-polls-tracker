@@ -220,14 +220,12 @@ def discover_sources() -> List[Dict]:
         if not title:
             title = "Infotrak Research poll release"
 
-        # Ignore generic navigation links that are not PDFs and not relevant.
         if not _is_pdf_url(url) and not _looks_relevant(title, url):
             continue
 
         pdf_url = url if _is_pdf_url(url) else None
         page_url = INFOTRAK_POLLS_URL if pdf_url else url
 
-        # If this is a relevant article page, inspect it for official PDFs.
         pdf_links = [pdf_url] if pdf_url else _extract_pdf_links_from_page(page_url)
 
         if pdf_links:
