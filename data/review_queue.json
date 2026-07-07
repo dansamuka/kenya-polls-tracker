@@ -1,1 +1,18 @@
-[]
+[
+  {
+    "source_id": "bdf83a5d845f6f7b50e9",
+    "pollster": "TIFA Research",
+    "title": "TIFA National Poll 2026: 1st Release on Political Alignments and 2027 Election Prospects",
+    "source_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
+    "reason": "Candidate percentage values were extracted, but all extracted values are zero. This is likely a parsing error and must be reviewed before publication.",
+    "extracted_candidates": {
+      "William Ruto": 0.0,
+      "Kalonzo Musyoka": 0.0,
+      "Fred Matiang'i": 0.0,
+      "Rigathi Gachagua": 0.0,
+      "Edwin Sifuna": 0.0
+    },
+    "raw_snippet": "Amid a Fragmented Opposition Landscape\n32%\n28%\n25%\n24% 24%\n21%\n18% 19% 19% 19%\n16% 16%\n15%\n14%\n10%\n9% 8% 8% 8%\n6% 6% 6% 6%\n5%5% 5% 5%\n4% 4%\n2% 3% 1% 2% 3% 3%\n0%0%0% 0%0%\nRuto Kalonzo Matiang'i Sifuna Gachagua Babu The Late Raila Other Undecided NR\nMay (2025) August (2025) November (2025) May (2026)\n• The 2027 presidential race remains competi\n---\na Fragmented Opposition Landscape\n32%\n28%\n25%\n24% 24%\n21%\n18% 19% 19% 19%\n16% 16%\n15%\n14%\n10%\n9% 8% 8% 8%\n6% 6% 6% 6%\n5%5% 5% 5%\n4% 4%\n2% 3% 1% 2% 3% 3%\n0%0%0% 0%0%\nRuto Kalonzo Matiang'i Sifuna Gachagua Babu The Late Raila Other Undecided NR\nMay (2025) August (2025) November (2025) May (2026)\n• The 2027 presidential race remains competitive but\n---\nnted Opposition Landscape\n32%\n28%\n25%\n24% 24%\n21%\n18% 19% 19% 19%\n16% 16%\n15%\n14%\n10%\n9% 8% 8% 8%\n6% 6% 6% 6%\n5%5% 5% 5%\n4% 4%\n2% 3% 1% 2% 3% 3%\n0%0%0% 0%0%\nRuto Kalonzo Matiang'i Sifuna Gachagua Babu The Late Raila Other Undecided NR\nMay (2025) August (2025) November (2025) May (2026)\n• The 2027 presidential race remains competitive but is becomi\n---\nandscape\n32%\n28%\n25%\n24% 24%\n21%\n18% 19% 19% 19%\n16% 16%\n15%\n14%\n10%\n9% 8% 8% 8%\n6% 6% 6% 6%\n5%5% 5% 5%\n4% 4%\n2% 3% 1% 2% 3% 3%\n0%0%0% 0%0%\nRuto Kalonzo Matiang'i Sifuna Gachagua Babu The Late Raila Other Undecided NR\nMay (2025) August (2025) November (2025) May (2026)\n• The 2027 presidential race remains competitive but is becoming more defined,\n---\nition Landscape\n32%\n28%\n25%\n24% 24%\n21%\n18% 19% 19% 19%\n16% 16%\n15%\n14%\n10%\n9% 8% 8% 8%\n6% 6% 6% 6%\n5%5% 5% 5%\n4% 4%\n2% 3% 1% 2% 3% 3%\n0%0%0% 0%0%\nRuto Kalonzo Matiang'i Sifuna Gachagua Babu The Late Raila Other Undecided NR\nMay (2025) August (2025) November (2025) May (2026)\n• The 2027 presidential race remains competitive but is becoming more",
+    "created_at": "2026-07-07T14:59:15+00:00"
+  }
+]
