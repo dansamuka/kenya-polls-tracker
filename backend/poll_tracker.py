@@ -233,30 +233,45 @@ def build_registry_record(
     return record
 
 
-def build_public_record(source: Dict[str, Any], parse_result: Any) -> Dict[str, Any]:
-    """Convert an AUTO_ACCEPTED parse result into a public poll record."""
-    figures = {}
+def build_public_record(source: Dict[str, Any], parse_result: Any, series_record: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Convert an AUTO_ACCEPTED parse result into one public poll record."""
+    record_data = series_record or {}
+    source_url = source.get("pdf_url") or source.get("page_url")
 
+    figures_source = record_data.get("figures") or parse_result.figures
+    figures = {}
     for candidate in TRACKED_CANDIDATES:
-        value = parse_result.figures.get(candidate)
+        value = figures_source.get(candidate)
         figures[candidate] = value if value is not None else None
 
     return {
-        "date": parse_result.poll_date,
-        "fieldwork_dates": parse_result.fieldwork_dates,
+        "date": record_data.get("date") or parse_result.poll_date,
+        "fieldwork_dates": record_data.get("fieldwork_dates") or parse_result.fieldwork_dates,
         "pollster": source.get("pollster"),
-        "poll_type": parse_result.poll_type,
-        "question_text": parse_result.question_text,
+        "poll_type": record_data.get("poll_type") or parse_result.poll_type,
+        "question_text": record_data.get("question_text") or parse_result.question_text,
         "geography": "Kenya",
-        "sample_size": parse_result.sample_size,
+        "sample_size": record_data.get("sample_size") or parse_result.sample_size,
         "figures": figures,
         "source_title": source.get("title"),
-        "source_url": source.get("pdf_url") or source.get("page_url"),
+        "source_url": source_url,
         "extraction_status": parse_result.status,
-        "extraction_confidence": parse_result.confidence,
-        "notes": parse_result.reason,
+        "extraction_confidence": record_data.get("confidence") or parse_result.confidence,
+        "notes": record_data.get("notes") or parse_result.reason,
     }
 
+
+def build_public_records(source: Dict[str, Any], parse_result: Any) -> List[Dict[str, Any]]:
+    """
+    Convert a parse result into one or more public poll records.
+
+    Grouped chart parsers can attach ``series_records`` to emit a full trend
+    from one PDF. Ordinary parsers emit a single record.
+    """
+    series_records = getattr(parse_result, "series_records", None) or []
+    if series_records:
+        return [build_public_record(source, parse_result, item) for item in series_records]
+    return [build_public_record(source, parse_result)]
 
 def build_review_item(
     source: Dict[str, Any],
@@ -367,7 +382,7 @@ def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
     {
       "registry_status": str,
       "content_hash": str | None,
-      "public_record": dict | None,
+      "public_records": list[dict],
       "review_item": dict | None,
       "error": str | None
     }
@@ -379,7 +394,7 @@ def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "registry_status": "rejected",
             "content_hash": None,
-            "public_record": None,
+            "public_records": [],
             "review_item": None,
             "error": "Source has no URL.",
         }
@@ -404,7 +419,7 @@ def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "registry_status": "needs_review_processing_error",
             "content_hash": None,
-            "public_record": None,
+            "public_records": [],
             "review_item": review_item,
             "error": str(exc),
         }
@@ -413,7 +428,7 @@ def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "registry_status": "processed",
             "content_hash": content_hash,
-            "public_record": build_public_record(source, parse_result),
+            "public_records": build_public_records(source, parse_result),
             "review_item": None,
             "error": None,
         }
@@ -422,7 +437,7 @@ def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "registry_status": "needs_review",
             "content_hash": content_hash,
-            "public_record": None,
+            "public_records": [],
             "review_item": build_review_item(source, parse_result),
             "error": None,
         }
@@ -430,7 +445,7 @@ def process_source(source: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "registry_status": "rejected",
         "content_hash": content_hash,
-        "public_record": None,
+        "public_records": [],
         "review_item": None,
         "error": parse_result.reason,
     }
@@ -480,9 +495,9 @@ def main() -> None:
             else None,
         )
 
-        if result["public_record"]:
-            new_public_records.append(result["public_record"])
-            summary["records_auto_accepted"] += 1
+        if result["public_records"]:
+            new_public_records.extend(result["public_records"])
+            summary["records_auto_accepted"] += len(result["public_records"])
 
         elif result["review_item"]:
             new_review_items.append(result["review_item"])
