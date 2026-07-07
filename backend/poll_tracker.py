@@ -66,7 +66,24 @@ SEED_SOURCES: List[Dict[str, Optional[str]]] = [
         "page_url": "https://www.tifaresearch.com/tifa-national-poll-2026-1st-release-on-political-alignments-and-2027-election-prospects/",
         "pdf_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
         "published_date": "2026-05-14",
-    }
+    },
+    # Infotrak sources are official source documents/pages. They are seeds only,
+    # not hard-coded poll data. The parser still decides whether they contain
+    # tracked candidate popularity values that are safe to publish.
+    {
+        "pollster": "Infotrak Research",
+        "title": "Infotrak Voice of the People Poll – September 2025",
+        "page_url": "https://www.infotrakresearch.com/infotrak-voice-of-the-people-poll-september-2025/",
+        "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Infotrak-VOP-Poll_Sep-2025_Phase-One2.pdf",
+        "published_date": "2025-09-25",
+    },
+    {
+        "pollster": "Infotrak Research",
+        "title": "Mulembe Nation Poll December 2025",
+        "page_url": "https://www.infotrakresearch.com/mulembe-nation-poll-2025/",
+        "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Mulembe-Nation-Poll-Report_Internal_Report_Media_Release_Final-1.pdf",
+        "published_date": "2026-01-08",
+    },
 ]
 
 
