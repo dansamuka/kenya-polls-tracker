@@ -36,5 +36,17 @@
     "extracted_candidates": {},
     "raw_snippet": "",
     "created_at": "2026-07-12T06:10:49+00:00"
+  },
+  {
+    "source_id": "a9a5a08861e3de4c47a9",
+    "pollster": "Infotrak Research",
+    "title": "CountyTrak 2026: Citizen Ratings of Elected Leaders",
+    "source_url": "https://www.infotrakresearch.com/wp-content/uploads/2026/07/INFOTRAK-ELECTED-LEADERS-PERFORMANCE-RATING-2026-GP-FIN.pdf",
+    "reason": "Candidate values found but review is needed for: poll type, at least two positive tracked candidate values",
+    "extracted_candidates": {
+      "Edwin Sifuna": 62.0
+    },
+    "raw_snippet": "utu Samson Cherarkey Aaron Cheruiyot\nNyandarua Murang'a Nandi Kericho\n68% 65% 64% 63%\n6 Hon. 6 Hon. 6 Hon. 9 Hon. 9 Hon.\nVincent Kiprono Richard Onyonka Dan Maanzo Edwin Sifuna Steve Lelegwe\nBaringo Kisii Makueni Nairobi Samburu\n62% 62% 62% 61% 61%\n11 Hon. 11 Hon. 14 Hon. 14 Hon. 14 Hon.\nAli Roba Enock Wambua Julius Murgor Hillary Sigei Jackson",
+    "created_at": "2026-07-13T14:22:57+00:00"
   }
 ]
