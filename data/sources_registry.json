@@ -7,7 +7,7 @@
     "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2026/07/INFOTRAK-ELECTED-LEADERS-PERFORMANCE-RATING-2026-GP-FIN.pdf",
     "published_date": null,
     "first_seen_at": "2026-07-13T14:22:57+00:00",
-    "last_checked_at": "2026-07-22T05:57:35+00:00",
+    "last_checked_at": "2026-07-23T06:09:27+00:00",
     "sha256": "c3de2eaacec991f50527f37dd84facd8cf4038c0441f5c9e2efff5857b0cfc7e",
     "processing_status": "needs_review"
   },
@@ -43,7 +43,7 @@
     "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2026/07/INFOTRAK-VOP-POLITICAL-JULY-2026-GP.pdf",
     "published_date": null,
     "first_seen_at": "2026-07-16T05:47:26+00:00",
-    "last_checked_at": "2026-07-22T05:57:32+00:00",
+    "last_checked_at": "2026-07-23T06:09:24+00:00",
     "sha256": "7a7e3ad4c9228ffbe9dbcfbdb9be35c5754d5a202d2f6478cc024d90188ce172",
     "processing_status": "rejected"
   },
@@ -55,7 +55,7 @@
     "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Infotrak-VOP-Poll_Sep-2025_Phase-One2.pdf",
     "published_date": "2025-09-25",
     "first_seen_at": "2026-07-07T19:29:04+00:00",
-    "last_checked_at": "2026-07-22T05:57:30+00:00",
+    "last_checked_at": "2026-07-23T06:09:20+00:00",
     "sha256": "bfefbc7c8a34237e0aff3fae8a3b9c9355e8c7bf97f27aba37f5e07078f7a0d2",
     "processing_status": "rejected"
   },
@@ -67,7 +67,7 @@
     "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Mulembe-Nation-Poll-Report_Internal_Report_Media_Release_Final-1.pdf",
     "published_date": "2026-01-08",
     "first_seen_at": "2026-07-07T19:29:06+00:00",
-    "last_checked_at": "2026-07-22T05:57:31+00:00",
+    "last_checked_at": "2026-07-23T06:09:22+00:00",
     "sha256": "10706b99ed1e5cf595060fe5f554d668d2e4346adca948459c3f3f1d8d9f721b",
     "processing_status": "rejected"
   },
@@ -91,7 +91,7 @@
     "pdf_url": null,
     "published_date": null,
     "first_seen_at": "2026-07-07T19:29:32+00:00",
-    "last_checked_at": "2026-07-22T05:57:52+00:00",
+    "last_checked_at": "2026-07-23T06:09:34+00:00",
     "sha256": "09156a37958163b0720c6ad3f5d05a050275f59a21796c0d744c939b1acaf665",
     "processing_status": "rejected"
   },
@@ -103,7 +103,7 @@
     "pdf_url": null,
     "published_date": null,
     "first_seen_at": "2026-07-07T19:29:34+00:00",
-    "last_checked_at": "2026-07-22T05:58:02+00:00",
+    "last_checked_at": "2026-07-23T06:09:37+00:00",
     "sha256": "60171016571a722619165f4cea5b43e6de4f27780f97918f52c3c742eeae2530",
     "processing_status": "rejected"
   },
@@ -115,7 +115,7 @@
     "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/02/Infotrak-Elected-Leaders-Rating-2024-1.pdf",
     "published_date": null,
     "first_seen_at": "2026-07-07T19:29:11+00:00",
-    "last_checked_at": "2026-07-22T05:57:40+00:00",
+    "last_checked_at": "2026-07-23T06:09:33+00:00",
     "sha256": "e8348ff9766e6f2a91759fedc44b05729849cbb5bcc983bf20d12b09188ba038",
     "processing_status": "needs_review"
   },
@@ -139,7 +139,7 @@
     "pdf_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
     "published_date": "2026-05-14",
     "first_seen_at": "2026-07-07T14:59:15+00:00",
-    "last_checked_at": "2026-07-22T05:57:28+00:00",
+    "last_checked_at": "2026-07-23T06:09:19+00:00",
     "sha256": "01d6251c24986f0024ccd971401ab46cd8a92763ed81ca225fb0aab3d61b453b",
     "processing_status": "processed"
   }
