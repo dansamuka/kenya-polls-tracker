@@ -21,6 +21,27 @@
     "notes": "Extracted from TIFA grouped chart wave: August 2025"
   },
   {
+    "date": "2025-08-01",
+    "fieldwork_dates": "August 2025",
+    "pollster": "TIFA Research",
+    "poll_type": "popularity_rating",
+    "question_text": null,
+    "geography": "Kenya",
+    "sample_size": 2025,
+    "figures": {
+      "William Ruto": 10.0,
+      "Kalonzo Musyoka": 24.0,
+      "Fred Matiang'i": 14.0,
+      "Rigathi Gachagua": 2.0,
+      "Edwin Sifuna": 7.0
+    },
+    "source_title": "Kenya’s Road to 2027 General Election: Political parties, presidential contest and coalition dynamics",
+    "source_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Polls_2027-General-Election_Political-Parties-Presidency-and-Coalitions_24-July-2026.pdf",
+    "extraction_status": "AUTO_ACCEPTED",
+    "extraction_confidence": 0.98,
+    "notes": "Extracted from TIFA grouped chart wave: August 2025"
+  },
+  {
     "date": "2025-11-01",
     "fieldwork_dates": "November 2025",
     "pollster": "TIFA Research",
@@ -42,6 +63,27 @@
     "notes": "Extracted from TIFA grouped chart wave: November 2025"
   },
   {
+    "date": "2025-11-01",
+    "fieldwork_dates": "November 2025",
+    "pollster": "TIFA Research",
+    "poll_type": "popularity_rating",
+    "question_text": null,
+    "geography": "Kenya",
+    "sample_size": 2025,
+    "figures": {
+      "William Ruto": 24.0,
+      "Kalonzo Musyoka": 16.0,
+      "Fred Matiang'i": 10.0,
+      "Rigathi Gachagua": 24.0,
+      "Edwin Sifuna": 2.0
+    },
+    "source_title": "Kenya’s Road to 2027 General Election: Political parties, presidential contest and coalition dynamics",
+    "source_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Polls_2027-General-Election_Political-Parties-Presidency-and-Coalitions_24-July-2026.pdf",
+    "extraction_status": "AUTO_ACCEPTED",
+    "extraction_confidence": 0.98,
+    "notes": "Extracted from TIFA grouped chart wave: November 2025"
+  },
+  {
     "date": "2026-05-14",
     "fieldwork_dates": "May 2026",
     "pollster": "TIFA Research",
@@ -58,6 +100,27 @@
     },
     "source_title": "TIFA National Poll 2026: Political Alignments and 2027 Election Prospects",
     "source_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
+    "extraction_status": "AUTO_ACCEPTED",
+    "extraction_confidence": 0.98,
+    "notes": "Extracted from TIFA grouped chart wave: May 2026"
+  },
+  {
+    "date": "2026-05-14",
+    "fieldwork_dates": "May 2026",
+    "pollster": "TIFA Research",
+    "poll_type": "popularity_rating",
+    "question_text": null,
+    "geography": "Kenya",
+    "sample_size": 2025,
+    "figures": {
+      "William Ruto": 19.0,
+      "Kalonzo Musyoka": 15.0,
+      "Fred Matiang'i": 13.0,
+      "Rigathi Gachagua": 19.0,
+      "Edwin Sifuna": 2.0
+    },
+    "source_title": "Kenya’s Road to 2027 General Election: Political parties, presidential contest and coalition dynamics",
+    "source_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Polls_2027-General-Election_Political-Parties-Presidency-and-Coalitions_24-July-2026.pdf",
     "extraction_status": "AUTO_ACCEPTED",
     "extraction_confidence": 0.98,
     "notes": "Extracted from TIFA grouped chart wave: May 2026"
