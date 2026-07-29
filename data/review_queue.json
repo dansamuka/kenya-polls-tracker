@@ -48,5 +48,25 @@
     },
     "raw_snippet": "utu Samson Cherarkey Aaron Cheruiyot\nNyandarua Murang'a Nandi Kericho\n68% 65% 64% 63%\n6 Hon. 6 Hon. 6 Hon. 9 Hon. 9 Hon.\nVincent Kiprono Richard Onyonka Dan Maanzo Edwin Sifuna Steve Lelegwe\nBaringo Kisii Makueni Nairobi Samburu\n62% 62% 62% 61% 61%\n11 Hon. 11 Hon. 14 Hon. 14 Hon. 14 Hon.\nAli Roba Enock Wambua Julius Murgor Hillary Sigei Jackson",
     "created_at": "2026-07-13T14:22:57+00:00"
+  },
+  {
+    "source_id": "e299a44d39950380ed68",
+    "pollster": "Infotrak Research",
+    "title": "Infotrak Voice of the People Poll – September 2025",
+    "source_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Infotrak-VOP-Poll_Sep-2025_Phase-One2.pdf",
+    "reason": "Processing failed: HTTPSConnectionPool(host='www.infotrakresearch.com', port=443): Max retries exceeded with url: /wp-content/uploads/2025/09/Infotrak-VOP-Poll_Sep-2025_Phase-One2.pdf (Caused by NameResolutionError(\"HTTPSConnection(host='www.infotrakresearch.com', port=443): Failed to resolve 'www.infotrakresearch.com' ([Errno -3] Temporary failure in name resolution)\"))",
+    "extracted_candidates": {},
+    "raw_snippet": "",
+    "created_at": "2026-07-29T05:58:02+00:00"
+  },
+  {
+    "source_id": "f98574cfd387a9fd4a1c",
+    "pollster": "Infotrak Research",
+    "title": "Mulembe Nation Poll December 2025",
+    "source_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Mulembe-Nation-Poll-Report_Internal_Report_Media_Release_Final-1.pdf",
+    "reason": "Processing failed: HTTPSConnectionPool(host='www.infotrakresearch.com', port=443): Max retries exceeded with url: /wp-content/uploads/2025/09/Mulembe-Nation-Poll-Report_Internal_Report_Media_Release_Final-1.pdf (Caused by NameResolutionError(\"HTTPSConnection(host='www.infotrakresearch.com', port=443): Failed to resolve 'www.infotrakresearch.com' ([Errno -3] Temporary failure in name resolution)\"))",
+    "extracted_candidates": {},
+    "raw_snippet": "",
+    "created_at": "2026-07-29T05:58:12+00:00"
   }
 ]

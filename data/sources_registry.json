@@ -55,9 +55,10 @@
     "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Infotrak-VOP-Poll_Sep-2025_Phase-One2.pdf",
     "published_date": "2025-09-25",
     "first_seen_at": "2026-07-07T19:29:04+00:00",
-    "last_checked_at": "2026-07-28T05:56:54+00:00",
-    "sha256": "bfefbc7c8a34237e0aff3fae8a3b9c9355e8c7bf97f27aba37f5e07078f7a0d2",
-    "processing_status": "rejected"
+    "last_checked_at": "2026-07-29T05:58:02+00:00",
+    "sha256": null,
+    "processing_status": "needs_review_processing_error",
+    "processing_error": "HTTPSConnectionPool(host='www.infotrakresearch.com', port=443): Max retries exceeded with url: /wp-content/uploads/2025/09/Infotrak-VOP-Poll_Sep-2025_Phase-One2.pdf (Caused by NameResolutionError(\"HTTPSConnection(host='www.infotrakresearch.com', port=443): Failed to resolve 'www.infotrakresearch.com' ([Errno -3] Temporary failure in name resolution)\"))"
   },
   {
     "source_id": "2f9615f90e93b60bad7f",
@@ -79,9 +80,10 @@
     "pdf_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Mulembe-Nation-Poll-Report_Internal_Report_Media_Release_Final-1.pdf",
     "published_date": "2026-01-08",
     "first_seen_at": "2026-07-07T19:29:06+00:00",
-    "last_checked_at": "2026-07-28T05:56:56+00:00",
-    "sha256": "10706b99ed1e5cf595060fe5f554d668d2e4346adca948459c3f3f1d8d9f721b",
-    "processing_status": "rejected"
+    "last_checked_at": "2026-07-29T05:58:12+00:00",
+    "sha256": null,
+    "processing_status": "needs_review_processing_error",
+    "processing_error": "HTTPSConnectionPool(host='www.infotrakresearch.com', port=443): Max retries exceeded with url: /wp-content/uploads/2025/09/Mulembe-Nation-Poll-Report_Internal_Report_Media_Release_Final-1.pdf (Caused by NameResolutionError(\"HTTPSConnection(host='www.infotrakresearch.com', port=443): Failed to resolve 'www.infotrakresearch.com' ([Errno -3] Temporary failure in name resolution)\"))"
   },
   {
     "source_id": "484b047059f662cb4580",
@@ -163,7 +165,7 @@
     "pdf_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Polls_2027-General-Election_Political-Parties-Presidency-and-Coalitions_24-July-2026.pdf",
     "published_date": null,
     "first_seen_at": "2026-07-27T06:39:11+00:00",
-    "last_checked_at": "2026-07-28T05:57:01+00:00",
+    "last_checked_at": "2026-07-29T05:58:18+00:00",
     "sha256": "aba2fa0781e96d1190eebadfcbc511c2c9eb6a41813d8e873d2f92b1293852b1",
     "processing_status": "processed"
   },
@@ -175,7 +177,7 @@
     "pdf_url": "https://www.tifaresearch.com/wp-content/uploads/2023/03/TIFA-Research_Political-Alignments-and-2027-Election-Prospects_14-May-2026.pdf",
     "published_date": "2026-05-14",
     "first_seen_at": "2026-07-07T14:59:15+00:00",
-    "last_checked_at": "2026-07-28T05:56:53+00:00",
+    "last_checked_at": "2026-07-29T05:57:52+00:00",
     "sha256": "01d6251c24986f0024ccd971401ab46cd8a92763ed81ca225fb0aab3d61b453b",
     "processing_status": "processed"
   }
