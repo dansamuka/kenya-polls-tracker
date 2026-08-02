@@ -78,5 +78,15 @@
     "extracted_candidates": {},
     "raw_snippet": "",
     "created_at": "2026-07-30T05:51:58+00:00"
+  },
+  {
+    "source_id": "e299a44d39950380ed68",
+    "pollster": "Infotrak Research",
+    "title": "Infotrak Voice of the People Poll – September 2025",
+    "source_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Infotrak-VOP-Poll_Sep-2025_Phase-One2.pdf",
+    "reason": "Processing failed: HTTPSConnectionPool(host='www.infotrakresearch.com', port=443): Read timed out. (read timeout=45)",
+    "extracted_candidates": {},
+    "raw_snippet": "",
+    "created_at": "2026-08-02T06:11:29+00:00"
   }
 ]
