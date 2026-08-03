@@ -88,5 +88,15 @@
     "extracted_candidates": {},
     "raw_snippet": "",
     "created_at": "2026-08-02T06:11:29+00:00"
+  },
+  {
+    "source_id": "f98574cfd387a9fd4a1c",
+    "pollster": "Infotrak Research",
+    "title": "Mulembe Nation Poll December 2025",
+    "source_url": "https://www.infotrakresearch.com/wp-content/uploads/2025/09/Mulembe-Nation-Poll-Report_Internal_Report_Media_Release_Final-1.pdf",
+    "reason": "Processing failed: HTTPSConnectionPool(host='www.infotrakresearch.com', port=443): Read timed out. (read timeout=45)",
+    "extracted_candidates": {},
+    "raw_snippet": "",
+    "created_at": "2026-08-03T06:33:14+00:00"
   }
 ]
